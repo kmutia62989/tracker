@@ -819,9 +819,114 @@ const SUPABASE_ANON_KEY = 'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBh
 let sb = null;
 let SUPABASE_CONFIGURED = false;
 
+// ---- Login token (Stage B) -------------------------------------------
+// After login the server gives us a signed token (valid 2 hours) that
+// proves who we are. It is attached to every database request and is
+// renewed automatically using the longer-lived session token.
+let appJwt = null;
+let appJwtExp = 0;            // seconds since epoch
+let appJwtDisabled = false;   // set if the database rejects our token
+let appRefreshPromise = null;
+let appJwtTimer = null;
+window.appJwtOk = false;      // true once the database confirms the token works
+
+function setAppJwt(jwt, exp) {
+  appJwt = (jwt && !appJwtDisabled) ? jwt : null;
+  appJwtExp = exp || 0;
+  try {
+    if (sb && sb.realtime && sb.realtime.setAuth) sb.realtime.setAuth(appJwt);
+  } catch (e) { console.warn('realtime setAuth failed:', e); }
+}
+
+// Ask the database "who am I?". If it does not recognise the token we
+// stop using it, so the app keeps working instead of failing everywhere.
+async function appSelfTest() {
+  try {
+    const { data, error } = await sb.rpc('app_whoami');
+    window.appJwtOk = !error && !!data && data.logged_in === true;
+  } catch (e) {
+    window.appJwtOk = false;
+  }
+  if (!window.appJwtOk) {
+    console.warn('Login token was not accepted by the database; continuing without it.');
+    appJwtDisabled = true;
+    appJwt = null;
+    try { if (sb && sb.realtime && sb.realtime.setAuth) sb.realtime.setAuth(null); } catch (e) {}
+    if (typeof showToast === 'function') showToast('Secure login is unavailable right now. Please tell Kristina.', true);
+  }
+  return window.appJwtOk;
+}
+
+// Trade the long-lived session token for a fresh 2-hour token.
+// Returns 'ok', 'invalid' (session ended) or 'error' (network problem).
+async function refreshAppSession() {
+  if (appRefreshPromise) return appRefreshPromise;
+  const token = localStorage.getItem('registry_token');
+  if (!token || !sb) return 'invalid';
+  appRefreshPromise = (async () => {
+    try {
+      const { data, error } = await sb.rpc('app_refresh', { p_token: token });
+      if (error) return 'error';
+      if (!data) return 'invalid';
+      setAppJwt(data.jwt, data.jwt_exp);
+      if (data.profile && state && state.profile) {
+        state.profile = data.profile;
+        localStorage.setItem('registry_profile', JSON.stringify(data.profile));
+      }
+      return 'ok';
+    } catch (e) {
+      return 'error';
+    } finally {
+      appRefreshPromise = null;
+    }
+  })();
+  return appRefreshPromise;
+}
+
+function appSessionExpired() {
+  if (typeof state === 'undefined' || !state.profile) return;
+  if (typeof showToast === 'function') showToast('Your session expired. Please log in again.', true);
+  logout();
+}
+
+function startAppJwtTimer() {
+  stopAppJwtTimer();
+  appJwtTimer = setInterval(async () => {
+    if (!localStorage.getItem('registry_token')) return;
+    const r = await refreshAppSession();
+    if (r === 'invalid') appSessionExpired();
+  }, 30 * 60 * 1000);
+}
+function stopAppJwtTimer() {
+  if (appJwtTimer) { clearInterval(appJwtTimer); appJwtTimer = null; }
+}
+
+// Every database request goes through here so the login token is attached.
+async function appFetch(input, init) {
+  try {
+    const url = typeof input === 'string' ? input : ((input && input.url) || '');
+    const isAuthCall = url.includes('/rpc/app_login') || url.includes('/rpc/app_refresh');
+    if (appJwt && url.startsWith(SUPABASE_URL) && !isAuthCall) {
+      if (appJwtExp - Date.now() / 1000 < 300) {
+        const r = await refreshAppSession();
+        if (r === 'invalid') appSessionExpired();
+      }
+      if (appJwt) {
+        const baseHeaders = (init && init.headers) || ((typeof input !== 'string' && input && input.headers) || undefined);
+        const headers = new Headers(baseHeaders);
+        headers.set('Authorization', 'Bearer ' + appJwt);
+        init = Object.assign({}, init, { headers });
+      }
+    }
+  } catch (e) {
+    console.warn('appFetch:', e);
+  }
+  return fetch(input, init);
+}
+
 try {
   if (SUPABASE_URL.startsWith('http') && SUPABASE_ANON_KEY !== 'YOUR_SUPABASE_ANON_KEY') {
-    sb = window.supabase.createClient(SUPABASE_URL, SUPABASE_ANON_KEY);
+    sb = window.supabase.createClient(SUPABASE_URL, SUPABASE_ANON_KEY, { global: { fetch: appFetch } });
     SUPABASE_CONFIGURED = true;
   }
 } catch (err) {
@@ -953,7 +1058,8 @@ async function handleLogin(e) {
   try {
     // The password is now checked on the server (app_login function), so
     // password hashes never reach the browser.
-    const { data: loginResult, error: loginErr } = await sb.rpc('app_login', {
+    appJwtDisabled = false;
+    const { data: loginResult, error: loginErr } = await sb.rpc('app_login_v2', {
       p_username: username,
       p_password: password,
     });
@@ -965,10 +1071,12 @@ async function handleLogin(e) {
       throw new Error('Invalid username or password.');
     }
 
-    const { token, ...profileRow } = loginResult;
+    const { token, jwt, jwt_exp, ...profileRow } = loginResult;
     state.profile = profileRow;
     localStorage.setItem('registry_profile', JSON.stringify(profileRow));
     if (token) localStorage.setItem('registry_token', token);
+    setAppJwt(jwt, jwt_exp);
+    await appSelfTest();
     enterApp();
   } catch (err) {
     errorBox.textContent = err.message || 'Something went wrong. Please try again.';
@@ -1334,18 +1442,37 @@ function enterApp() {
   archiveCompletedIpsDays(); // immediate check on login
   startIpsArchiveWatcher(); // and keep re-checking periodically for as long as the tab stays open, since persistent login means someone may never log in again for days
   startMaintenanceWindowWatcher();
+  startAppJwtTimer();
 }
 
 function checkExistingSession() {
   const stored = localStorage.getItem('registry_profile');
-  if (stored) {
+  const savedToken = localStorage.getItem('registry_token');
+  if (stored && savedToken) {
     state.profile = JSON.parse(stored);
     // Older sessions saved the password hash in this browser. Remove it.
     if (state.profile && 'password_hash' in state.profile) {
       delete state.profile.password_hash;
       localStorage.setItem('registry_profile', JSON.stringify(state.profile));
     }
-    enterApp();
+    refreshAppSession().then(async (r) => {
+      if (r === 'ok') {
+        await appSelfTest();
+        enterApp();
+        return;
+      }
+      // Session ended (or no connection): ask the person to log in again.
+      if (r === 'invalid') {
+        localStorage.removeItem('registry_profile');
+        localStorage.removeItem('registry_token');
+      }
+      state.profile = null;
+      document.getElementById('login-screen').classList.remove('hidden');
+    });
+  } else if (stored) {
+    // Older session without a login token: log in once to get one.
+    localStorage.removeItem('registry_profile');
+    document.getElementById('login-screen').classList.remove('hidden');
   } else {
     // No saved session — this is a genuine "not logged in" visitor, so
     // now (and only now) reveal the login screen. Kept hidden by
@@ -1356,10 +1483,12 @@ function checkExistingSession() {
 }
 
 function logout() {
+  stopAppJwtTimer();
   const tok = localStorage.getItem('registry_token');
   if (tok && sb) { sb.rpc('app_logout', { p_token: tok }).then(() => {}, () => {}); }
   localStorage.removeItem('registry_token');
   localStorage.removeItem('registry_profile');
+  setAppJwt(null, 0);
   sessionStorage.removeItem('registry_active_view');
   sessionStorage.removeItem('registry_priolist_tab');
   sessionStorage.removeItem('registry_ips_tab');
@@ -1913,7 +2042,7 @@ function renderCurrentView() {
 // has to remember to hard-refresh. Uses a tiny Supabase table
 // (app_version: key text primary key, value text) so it works across
 // every browser without needing a server push.
-const APP_VERSION = '2026-11-10-secure-login-stage-a';
+const APP_VERSION = '2026-11-11-secure-login-stage-b';
 
 async function checkAppVersionAndReloadIfStale() {
   try {
