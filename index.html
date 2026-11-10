@@ -951,31 +951,38 @@ async function handleLogin(e) {
   }
 
   try {
-    const { data: profileRow, error: profileErr } = await sb
-      .from('app_users')
-      .select('*')
-      .ilike('username', username)
-      .maybeSingle();
-
-    if (profileErr) {
-      console.error('Login query error:', profileErr);
+    // The password is now checked on the server (app_login function), so
+    // password hashes never reach the browser.
+    const { data: loginResult, error: loginErr } = await sb.rpc('app_login', {
+      p_username: username,
+      p_password: password,
+    });
+    if (loginErr) {
+      console.error('Login error:', loginErr);
       throw new Error('Something went wrong checking your account. Please try again.');
     }
-    if (!profileRow) {
+    if (!loginResult) {
       throw new Error('Invalid username or password.');
     }
 
-    // Simple password check against stored hash column (set up via Supabase function or stored hash)
-    const ok = await verifyPassword(password, profileRow.password_hash);
-    if (!ok) throw new Error('Invalid username or password.');
-
+    const { token, ...profileRow } = loginResult;
     state.profile = profileRow;
     localStorage.setItem('registry_profile', JSON.stringify(profileRow));
+    if (token) localStorage.setItem('registry_token', token);
     enterApp();
   } catch (err) {
     errorBox.textContent = err.message || 'Something went wrong. Please try again.';
     errorBox.style.display = 'block';
   }
+}
+
+// Session token issued by the server at login. Needed for account
+// actions (change password, add/edit/delete accounts).
+function getAppToken() {
+  return localStorage.getItem('registry_token');
+}
+function needRelogin() {
+  showToast('Please log out and log in again to do this.', true);
 }
 
 async function verifyPassword(plain, hash) {
@@ -1333,6 +1340,11 @@ function checkExistingSession() {
   const stored = localStorage.getItem('registry_profile');
   if (stored) {
     state.profile = JSON.parse(stored);
+    // Older sessions saved the password hash in this browser. Remove it.
+    if (state.profile && 'password_hash' in state.profile) {
+      delete state.profile.password_hash;
+      localStorage.setItem('registry_profile', JSON.stringify(state.profile));
+    }
     enterApp();
   } else {
     // No saved session — this is a genuine "not logged in" visitor, so
@@ -1344,6 +1356,9 @@ function checkExistingSession() {
 }
 
 function logout() {
+  const tok = localStorage.getItem('registry_token');
+  if (tok && sb) { sb.rpc('app_logout', { p_token: tok }).then(() => {}, () => {}); }
+  localStorage.removeItem('registry_token');
   localStorage.removeItem('registry_profile');
   sessionStorage.removeItem('registry_active_view');
   sessionStorage.removeItem('registry_priolist_tab');
@@ -1898,7 +1913,7 @@ function renderCurrentView() {
 // has to remember to hard-refresh. Uses a tiny Supabase table
 // (app_version: key text primary key, value text) so it works across
 // every browser without needing a server push.
-const APP_VERSION = '2026-09-29-priolist-remove-blank-status-option';
+const APP_VERSION = '2026-11-10-secure-login-stage-a';
 
 async function checkAppVersionAndReloadIfStale() {
   try {
@@ -9144,7 +9159,7 @@ function openAddEmployeeModal() {
           </div>
           <div style="flex:1;">
             <label for="ae-password">Password</label>
-            <input type="password" id="ae-password" required minlength="4" autocomplete="new-password" style="width:100%; padding:9px 10px; border-radius:6px; border:1px solid var(--line); font-family:inherit;">
+            <input type="password" id="ae-password" required minlength="8" autocomplete="new-password" style="width:100%; padding:9px 10px; border-radius:6px; border:1px solid var(--line); font-family:inherit;">
           </div>
         </div>
         <div class="field" style="margin-top:14px;">
@@ -9197,7 +9212,8 @@ async function submitAddEmployee(e) {
     errorBox.textContent = 'Enter valid, non-negative starting balances.'; errorBox.style.display = 'block'; return;
   }
   if (!username || !password) { errorBox.textContent = 'A username and password are both required.'; errorBox.style.display = 'block'; return; }
-  if (password.length < 4) { errorBox.textContent = 'Password is too short.'; errorBox.style.display = 'block'; return; }
+  if (password.length < 8) { errorBox.textContent = 'Password must be at least 8 characters.'; errorBox.style.display = 'block'; return; }
+  if (!getAppToken()) { errorBox.textContent = 'Please log out and log in again to add employees.'; errorBox.style.display = 'block'; return; }
 
   // Check the username isn't already taken before creating anything.
   const { data: existing } = await sb.from('app_users').select('id').ilike('username', username).maybeSingle();
@@ -9218,15 +9234,16 @@ async function submitAddEmployee(e) {
     return;
   }
 
-  const password_hash = await hashPassword(password);
-  const { error: userError } = await sb.from('app_users').insert({
-    username,
-    password_hash,
-    display_name,
-    role,
-    role2,
-    employee_id: newEmployee.id,
+  const { data: createResult, error: createErr } = await sb.rpc('app_create_account', {
+    p_token: getAppToken(),
+    p_username: username,
+    p_password: password,
+    p_display_name: display_name,
+    p_role: role,
+    p_role2: role2,
+    p_employee_id: String(newEmployee.id),
   });
+  const userError = createErr || (createResult !== 'ok' ? { message: createResult } : null);
 
   if (userError) {
     // Roll back the employee row so we don't leave an orphaned record
@@ -9300,8 +9317,15 @@ function openEditRoleModal(employeeId) {
     const role = document.getElementById('er-role').value;
     const role2 = document.getElementById('er-role2').value || null;
     if (role2 && role2 === role) { showToast('The second role must be different from the first.', true); return; }
-    const { error } = await sb.from('app_users').update({ role, role2 }).eq('id', account.id);
-    if (error) { showToast('Could not update the role.', true); return; }
+    const token = getAppToken();
+    if (!token) { needRelogin(); return; }
+    const { data: roleResult, error } = await sb.rpc('app_update_roles', {
+      p_token: token,
+      p_user_id: String(account.id),
+      p_role: role,
+      p_role2: role2,
+    });
+    if (error || roleResult !== 'ok') { showToast('Could not update the role.', true); return; }
     closeModal();
     showToast('Role updated.');
     renderEmployeeManagement();
@@ -9399,6 +9423,9 @@ function openDeleteEmployeeModal(employeeId) {
 }
 
 async function deleteEmployeePermanently(employeeId) {
+  // Deleting a login account needs a server session; check first so we
+  // never delete half of someone's records and then fail.
+  if (appUserForEmployee(employeeId) && !getAppToken()) { needRelogin(); return; }
   // Delete order matters here: app_users.employee_id is a foreign key
   // referencing employees.id, so the login account must be removed
   // BEFORE the employee row itself, or Postgres rejects the employee
@@ -9420,7 +9447,11 @@ async function deleteEmployeePermanently(employeeId) {
 
   const account = appUserForEmployee(employeeId);
   if (account) {
-    const { error: accountError } = await sb.from('app_users').delete().eq('id', account.id);
+    const { data: delResult, error: delErr } = await sb.rpc('app_delete_account', {
+      p_token: getAppToken(),
+      p_user_id: String(account.id),
+    });
+    const accountError = delErr || (delResult !== 'ok' ? { message: delResult } : null);
     if (accountError) {
       console.error('Could not delete the login account:', accountError);
       showToast(`Could not delete the login account: ${accountError.message || accountError.code || 'unknown error'}`, true);
@@ -9645,11 +9676,11 @@ function openChangePasswordModal() {
       </div>
       <div class="field">
         <label for="cp-new">New password</label>
-        <input type="password" id="cp-new" required minlength="4" style="width:100%; padding:9px 10px; border-radius:6px; border:1px solid var(--line); font-family:inherit;">
+        <input type="password" id="cp-new" required minlength="8" style="width:100%; padding:9px 10px; border-radius:6px; border:1px solid var(--line); font-family:inherit;">
       </div>
       <div class="field">
         <label for="cp-confirm">Confirm new password</label>
-        <input type="password" id="cp-confirm" required minlength="4" style="width:100%; padding:9px 10px; border-radius:6px; border:1px solid var(--line); font-family:inherit;">
+        <input type="password" id="cp-confirm" required minlength="8" style="width:100%; padding:9px 10px; border-radius:6px; border:1px solid var(--line); font-family:inherit;">
       </div>
       <div class="login-error" id="cp-error"></div>
       <button type="submit" class="btn btn-primary" style="justify-content:center; margin-top:4px;">Update password</button>
@@ -9668,20 +9699,21 @@ async function submitChangePassword(e) {
   errorBox.style.display = 'none';
 
   try {
-    const currentOk = await verifyPassword(current, state.profile.password_hash);
-    if (!currentOk) throw new Error('Current password is incorrect.');
     if (next !== confirm) throw new Error('New passwords do not match.');
-    if (next.length < 4) throw new Error('New password is too short.');
+    if (next.length < 8) throw new Error('New password must be at least 8 characters.');
+    const token = getAppToken();
+    if (!token) throw new Error('Please log out and log in again, then change your password.');
 
-    const enc = new TextEncoder().encode(next);
-    const buf = await crypto.subtle.digest('SHA-256', enc);
-    const newHash = Array.from(new Uint8Array(buf)).map(b => b.toString(16).padStart(2, '0')).join('');
-
-    const { error } = await sb.from('app_users').update({ password_hash: newHash }).eq('id', state.profile.id);
+    const { data: pwResult, error } = await sb.rpc('app_change_password', {
+      p_token: token,
+      p_current: current,
+      p_new: next,
+    });
     if (error) throw new Error('Could not save the new password. Please try again.');
-
-    state.profile.password_hash = newHash;
-    localStorage.setItem('registry_profile', JSON.stringify(state.profile));
+    if (pwResult === 'wrong_current') throw new Error('Current password is incorrect.');
+    if (pwResult === 'too_short') throw new Error('New password must be at least 8 characters.');
+    if (pwResult === 'not_logged_in') throw new Error('Your session has expired. Please log out and log in again.');
+    if (pwResult !== 'ok') throw new Error('Could not save the new password. Please try again.');
 
     closeModal();
     showToast('Password updated.');
