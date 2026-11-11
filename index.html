@@ -2048,7 +2048,7 @@ function renderCurrentView() {
 // has to remember to hard-refresh. Uses a tiny Supabase table
 // (app_version: key text primary key, value text) so it works across
 // every browser without needing a server push.
-const APP_VERSION = '2026-11-12-leave-fix-5';
+const APP_VERSION = '2026-11-12-leave-fix-7';
 
 async function checkAppVersionAndReloadIfStale() {
   try {
@@ -3110,6 +3110,21 @@ function storedBalanceFiscalYear(employee) {
   return fiscalYearForDate(employee.balance_as_of_date || isoDate(new Date()));
 }
 
+// VL runs on the fiscal year (Apr 1 - Mar 31, 25 credits). SL runs on the
+// CALENDAR year (Jan 1 - Dec 31, 6 credits). "anchor" is an ISO date
+// (preferred), a legacy number, or nothing (= today).
+function poolPeriodFor(pool, anchor) {
+  if (anchor == null) anchor = isoDate(new Date());
+  if (typeof anchor === 'number') return anchor;
+  return pool === 'sl' ? Number(String(anchor).slice(0, 4)) : fiscalYearForDate(anchor);
+}
+function poolPeriodLabel(pool, period) {
+  return pool === 'sl' ? `${period} (Jan-Dec)` : fiscalYearLabel(period);
+}
+function storedPoolPeriod(employee, pool) {
+  return poolPeriodFor(pool, employee.balance_as_of_date || isoDate(new Date()));
+}
+
 // Core fiscal-year-aware balance calculation, shared by VL and SL.
 // `fiscalYearStart` defaults to the CURRENT fiscal year (today's) when
 // not given, matching how every existing call site already used these
@@ -3125,14 +3140,14 @@ function storedBalanceFiscalYear(employee) {
 // once their own 1-day usage is naively added back onto that floored
 // zero, instead of correctly landing back at 0).
 function fiscalPoolBalanceUnfloored(employee, pool, fiscalYearStart) {
-  const targetFY = fiscalYearStart != null ? fiscalYearStart : currentFiscalYear();
-  const storedFY = storedBalanceFiscalYear(employee);
+  const targetFY = poolPeriodFor(pool, fiscalYearStart);
+  const storedFY = storedPoolPeriod(employee, pool);
   const storedAmount = pool === 'vl' ? (employee.vl_balance ?? 0) : (employee.sl_balance ?? 0);
   const standardAllotment = pool === 'vl' ? STANDARD_FISCAL_VL_ALLOTMENT : STANDARD_FISCAL_SL_ALLOTMENT;
   const startingAllotment = targetFY === storedFY ? storedAmount : standardAllotment;
   const asOf = targetFY === storedFY ? (employee.balance_as_of_date || '0000-01-01') : '0000-01-01';
   const used = entriesForEmployee(employee.id)
-    .filter(e => fiscalYearForDate(e.leave_date) === targetFY)
+    .filter(e => poolPeriodFor(pool, e.leave_date) === targetFY)
     .filter(e => e.leave_date >= asOf)
     .filter(e => LEAVE_TYPES[e.leave_type] && LEAVE_TYPES[e.leave_type].credit === pool)
     .reduce((sum, e) => sum + dayFractionForEntry(e), 0);
@@ -3608,7 +3623,7 @@ function renderAccountHub() {
       <div id="account-hub-tab-menu" style="display:none; position:absolute; top:calc(100% + 6px); left:0; z-index:50; background:var(--paper-raised); border-radius:8px; box-shadow:var(--shadow-lg); min-width:160px; overflow:hidden;">
         <div class="account-hub-tab-option" data-tab="leave-tracker" style="padding:9px 14px; font-size:12.5px; color:var(--ink); cursor:pointer; background:${ltOn ? 'var(--teal-wash)' : 'transparent'};">Leave Tracker</div>
         <div class="account-hub-tab-option" data-tab="employee-management" style="padding:9px 14px; font-size:12.5px; color:var(--ink); cursor:pointer; background:${emOn ? 'var(--teal-wash)' : 'transparent'};">Employees</div>
-        ${(ltOn && isAdmin()) ? `<div class="account-hub-tab-option" data-action="download-report" style="padding:9px 14px; font-size:12.5px; color:var(--ink); cursor:pointer; border-top:1px solid var(--line-soft);">Download Report</div>` : ''}
+        ${(ltOn && isAdmin()) ? `<div class="account-hub-tab-option" data-action="download-report" style="padding:9px 14px; font-size:12.5px; color:var(--ink); cursor:pointer; border-top:1px solid var(--line-soft);">Download Report</div><div class="account-hub-tab-option" data-action="export-mirror" style="padding:9px 14px; font-size:12.5px; color:var(--ink); cursor:pointer;">Export to Excel (SharePoint)</div>` : ''}
       </div>
     </div>
   `;
@@ -3653,6 +3668,7 @@ function renderAccountHub() {
         e.stopPropagation();
         tabMenu.style.display = 'none';
         if (opt.dataset.action === 'download-report') { buildAndOpenLeaveReport(); return; }
+        if (opt.dataset.action === 'export-mirror') { exportLeaveMirrorXlsx(); return; }
         if (opt.dataset.tab === state.accountHubTab) return;
         state.accountHubTab = opt.dataset.tab;
         updateUrlHashForView('account-hub');
@@ -3729,12 +3745,13 @@ function renderLeaveTracker() {
     actionsEl.style.marginBottom = '6px';
     actionsEl.innerHTML = `
       <div style="display:flex; align-items:center; gap:8px;">
-        ${isAdmin() ? `<button class="btn btn-ghost" id="btn-download-report">Download Report</button>` : ''}
+        ${isAdmin() ? `<button class="btn btn-ghost" id="btn-download-report">Download Report</button><button class="btn btn-ghost" id="btn-export-mirror">Export to Excel</button>` : ''}
         <button class="btn btn-primary" id="btn-new-request">+ Request leave</button>
       </div>
     `;
     document.getElementById('btn-new-request')?.addEventListener('click', openRequestModal);
     document.getElementById('btn-download-report')?.addEventListener('click', () => buildAndOpenLeaveReport());
+    document.getElementById('btn-export-mirror')?.addEventListener('click', () => exportLeaveMirrorXlsx());
   }
 
   // Render the bell icon in the page head slot beside "Leave Tracker"
@@ -4042,8 +4059,8 @@ async function approveCancellation(id) {
   // still counts against the balance, so this is the pre-restore figure.
   const empForNotif = state.employees.find(e => e.id === entry.employee_id);
   const fyNum = fiscalYearForDate(isoDate(new Date()));
-  const vlBefore = empForNotif ? round2(fiscalPoolBalance(empForNotif, 'vl', fyNum)) : null;
-  const slBefore = empForNotif ? round2(fiscalPoolBalance(empForNotif, 'sl', fyNum)) : null;
+  const vlBefore = empForNotif ? round2(fiscalPoolBalance(empForNotif, 'vl', isoDate(new Date()))) : null;
+  const slBefore = empForNotif ? round2(fiscalPoolBalance(empForNotif, 'sl', isoDate(new Date()))) : null;
 
   const query = sb.from('leave_entries').delete();
   const { error } = groupId ? await query.eq('request_group_id', groupId) : await query.eq('id', id);
@@ -4055,8 +4072,8 @@ async function approveCancellation(id) {
   // Notify all admins — same bell as leave approvals, with the credits
   // restored by the cancellation (if the leave type drew on credits).
   if (empForNotif && vlBefore !== null) {
-    const vlAfter = round2(fiscalPoolBalance(empForNotif, 'vl', fyNum));
-    const slAfter = round2(fiscalPoolBalance(empForNotif, 'sl', fyNum));
+    const vlAfter = round2(fiscalPoolBalance(empForNotif, 'vl', isoDate(new Date())));
+    const slAfter = round2(fiscalPoolBalance(empForNotif, 'sl', isoDate(new Date())));
     const firstName = empForNotif.display_name.split(' ')[0];
     const dayLabel = groupCount > 1 ? `${groupCount} days of leave` : 'leave';
     const cancelDates = groupRows.map(e => e.leave_date).sort();
@@ -4261,6 +4278,176 @@ function shiftMonth(delta) {
 // picker, defaulting to whatever month the calendar is currently on.
 // The report's own filter controls (leave type, etc.) still apply once
 // it's open, see generateLeaveReport / openFilterableLeaveReportTab.
+// =====================================================================
+// EXCEL MIRROR — download the Leave Tracker in the same layout as the
+// SharePoint "Leave Tracker - PH Team" sheet (names down, weekdays across,
+// leave codes in the cells, SL/VL credits on the left). The app is the main
+// record; this file is a read-only mirror to drop into SharePoint.
+// =====================================================================
+function mirrorCellFor(e) {
+  const def = LEAVE_TYPES[e.leave_type];
+  if (!def) return null;
+  const pending = e.status === STATUS.PENDING;
+  const h = (e.hours != null && e.hours !== '') ? Number(e.hours) : null;
+  const isNoPay = e.leave_type === 'LNP' || e.leave_type === 'HLNP';
+  let code;
+  if (h && h < 8) code = isNoPay ? `${h}-LNP` : `${def.short.replace(/H$/, '')}${h}`;
+  else code = def.short;
+  const kind = pending ? 'pending' : isNoPay ? 'lnp' : (def.cls === 'vl' ? 'vl' : def.cls === 'sl' ? 'sl' : 'el');
+  return { code: pending ? `P-${code}` : code, kind };
+}
+
+function buildLeaveMirrorModel() {
+  const fy = currentFiscalYear();
+  const start = `${fy}-04-01`, end = `${fy + 1}-03-31`;
+  const dates = datesInRange(start, end, { skipWeekends: true });
+  const dateSet = new Set(dates);
+  const shown = new Set([STATUS.APPROVED, STATUS.CANCELLATION_PENDING, STATUS.PENDING]);
+  const byEmpDate = new Map();
+  state.leaveEntries.forEach(e => {
+    if (!shown.has(e.status) || !dateSet.has(e.leave_date)) return;
+    const cell = mirrorCellFor(e);
+    if (!cell) return;
+    const key = `${e.employee_id}|${e.leave_date}`;
+    if (!byEmpDate.has(key)) byEmpDate.set(key, []);
+    byEmpDate.get(key).push(cell);
+  });
+  const employees = state.employees.filter(e => e.active !== false).sort(byKristinaFirstThenName);
+  const rows = employees.map(emp => {
+    const cells = dates.map(d => {
+      const list = byEmpDate.get(`${emp.id}|${d}`);
+      if (!list) return null;
+      return { code: list.map(c => c.code).join(' + '), kind: list[0].kind };
+    });
+    return { name: emp.display_name, sl: getSLBalance(emp), vl: getVLBalance(emp), cells };
+  });
+  return { fy, dates, rows };
+}
+
+function loadExcelJsLibrary() {
+  return new Promise((resolve, reject) => {
+    if (window.ExcelJS) { resolve(window.ExcelJS); return; }
+    const sc = document.createElement('script');
+    sc.src = 'https://cdn.jsdelivr.net/npm/exceljs@4.4.0/dist/exceljs.min.js';
+    sc.onload = () => window.ExcelJS ? resolve(window.ExcelJS) : reject(new Error('ExcelJS not available'));
+    sc.onerror = () => reject(new Error('Could not load ExcelJS'));
+    document.head.appendChild(sc);
+  });
+}
+
+function mirrorDateLabels(dates) {
+  const MON = ['Jan','Feb','Mar','Apr','May','Jun','Jul','Aug','Sep','Oct','Nov','Dec'];
+  const DOW = ['SUN','MON','TUE','WED','THU','FRI','SAT'];
+  return dates.map(d => {
+    const dt = new Date(d + 'T00:00:00');
+    return { top: `${dt.getDate()}-${MON[dt.getMonth()]}`, dow: DOW[dt.getDay()], month: `${['JANUARY','FEBRUARY','MARCH','APRIL','MAY','JUNE','JULY','AUGUST','SEPTEMBER','OCTOBER','NOVEMBER','DECEMBER'][dt.getMonth()]} ${dt.getFullYear()}` };
+  });
+}
+
+async function exportLeaveMirrorXlsx() {
+  if (!isAdmin()) { showToast('Only admins can export the Leave Tracker.', true); return; }
+  showToast('Preparing the Excel file…');
+  const model = buildLeaveMirrorModel();
+  const labels = mirrorDateLabels(model.dates);
+  const stamp = new Date().toLocaleString('en-PH', { dateStyle: 'medium', timeStyle: 'short' });
+  const note = `Mirror of Team Hub (read-only) — updated ${stamp}. Do not edit by hand.`;
+  const fileBase = `Leave-Tracker-PH-Team_FY${model.fy}-${String(model.fy + 1).slice(2)}_${isoDate(new Date())}`;
+
+  try {
+    const ExcelJS = await loadExcelJsLibrary();
+    const wb = new ExcelJS.Workbook();
+    const ws = wb.addWorksheet('Leave Tracker - PH Team', { views: [{ state: 'frozen', xSplit: 3, ySplit: 3 }] });
+    const FILL = { vl: 'FF92D050', sl: 'FFB4A7D6', el: 'FFF4B183', lnp: 'FFF4B6D7', pending: 'FFD9D9D9' };
+    const thin = { style: 'thin', color: { argb: 'FFBFBFBF' } };
+    const border = { top: thin, left: thin, bottom: thin, right: thin };
+    const firstDateCol = 4;
+    ws.getColumn(1).width = 13; ws.getColumn(2).width = 13; ws.getColumn(3).width = 30;
+    model.dates.forEach((_, i) => { ws.getColumn(firstDateCol + i).width = 7.5; });
+
+    ws.mergeCells(1, 1, 1, 3);
+    const noteCell = ws.getCell(1, 1);
+    noteCell.value = note;
+    noteCell.font = { italic: true, size: 9, color: { argb: 'FF666666' } };
+    noteCell.alignment = { wrapText: true, vertical: 'middle' };
+    ws.getRow(1).height = 30;
+
+    // Month banner (merged per month, alternating colours)
+    let i = 0, band = 0;
+    while (i < labels.length) {
+      let j = i;
+      while (j + 1 < labels.length && labels[j + 1].month === labels[i].month) j++;
+      ws.mergeCells(1, firstDateCol + i, 1, firstDateCol + j);
+      const c = ws.getCell(1, firstDateCol + i);
+      c.value = labels[i].month;
+      c.font = { bold: true, color: { argb: 'FFFFFFFF' }, size: 12 };
+      c.alignment = { horizontal: 'center', vertical: 'middle' };
+      c.fill = { type: 'pattern', pattern: 'solid', fgColor: { argb: band % 2 === 0 ? 'FFC03FC9' : 'FF2EB8E6' } };
+      band++; i = j + 1;
+    }
+
+    const headFill = { type: 'pattern', pattern: 'solid', fgColor: { argb: 'FFD9F2F1' } };
+    [['SL Credits', 1], ['VL Credits', 2], ['EE Name - PH', 3]].forEach(([t, col]) => {
+      const c = ws.getCell(2, col); c.value = t; c.font = { bold: true }; c.fill = headFill; c.border = border;
+      c.alignment = { horizontal: 'center', vertical: 'middle', wrapText: true };
+      const c3 = ws.getCell(3, col); c3.fill = headFill; c3.border = border;
+    });
+    labels.forEach((l, k) => {
+      const a = ws.getCell(2, firstDateCol + k); a.value = l.top; a.font = { bold: true, size: 9, color: { argb: 'FFFFFFFF' } };
+      const b = ws.getCell(3, firstDateCol + k); b.value = l.dow; b.font = { bold: true, size: 9 };
+      [a, b].forEach(c => { c.alignment = { horizontal: 'center' }; c.border = border; });
+      a.fill = { type: 'pattern', pattern: 'solid', fgColor: { argb: 'FF7F7F7F' } };
+      b.fill = { type: 'pattern', pattern: 'solid', fgColor: { argb: 'FFEDEDED' } };
+    });
+
+    model.rows.forEach((r, ri) => {
+      const row = 4 + ri;
+      const slC = ws.getCell(row, 1), vlC = ws.getCell(row, 2), nC = ws.getCell(row, 3);
+      slC.value = r.sl; vlC.value = r.vl; nC.value = r.name;
+      [slC, vlC].forEach(c => { c.font = { bold: true, color: { argb: 'FF1F5FBF' } }; c.alignment = { horizontal: 'center' }; c.border = border; });
+      nC.font = { bold: true }; nC.alignment = { horizontal: 'center' }; nC.border = border;
+      r.cells.forEach((cell, k) => {
+        const c = ws.getCell(row, firstDateCol + k);
+        c.border = border;
+        if (!cell) return;
+        c.value = cell.code;
+        c.font = { bold: true, size: 9 };
+        c.alignment = { horizontal: 'center', vertical: 'middle', wrapText: true };
+        c.fill = { type: 'pattern', pattern: 'solid', fgColor: { argb: FILL[cell.kind] || FILL.vl } };
+      });
+    });
+
+    const buf = await wb.xlsx.writeBuffer();
+    downloadBlob(new Blob([buf], { type: 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet' }), `${fileBase}.xlsx`);
+    showToast('Excel file downloaded.');
+  } catch (err) {
+    console.warn('ExcelJS unavailable, falling back to plain export:', err);
+    try {
+      if (typeof XLSX === 'undefined') throw new Error('No Excel library available');
+      const head1 = [note, '', ''], head2 = ['SL Credits', 'VL Credits', 'EE Name - PH'], head3 = ['', '', ''];
+      labels.forEach((l, k) => {
+        head1.push(k === 0 || labels[k - 1].month !== l.month ? l.month : '');
+        head2.push(l.top); head3.push(l.dow);
+      });
+      const aoa = [head1, head2, head3, ...model.rows.map(r => [r.sl, r.vl, r.name, ...r.cells.map(c => c ? c.code : '')])];
+      const wb = XLSX.utils.book_new();
+      XLSX.utils.book_append_sheet(wb, XLSX.utils.aoa_to_sheet(aoa), 'Leave Tracker - PH Team');
+      XLSX.writeFile(wb, `${fileBase}.xlsx`);
+      showToast('Excel file downloaded (plain version — no colours).');
+    } catch (err2) {
+      console.error(err2);
+      showToast('Could not create the Excel file.', true);
+    }
+  }
+}
+
+function downloadBlob(blob, filename) {
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement('a');
+  a.href = url; a.download = filename;
+  document.body.appendChild(a); a.click(); a.remove();
+  setTimeout(() => URL.revokeObjectURL(url), 1000);
+}
+
 function buildAndOpenLeaveReport() {
   if (!isAdmin()) { showToast('Only admins can download reports.', true); return; }
 
@@ -4985,7 +5172,7 @@ function openChangeLeaveTypeModal(entryId, currentType) {
     // types (e.g. VL -> VLH) genuinely changes how much credit is
     // used, so this can move even though no approval is happening.
     const changeEmployee = state.employees.find(emp => emp.id === entry.employee_id);
-    const changeFy = fiscalYearForDate(entry.leave_date);
+    const changeFy = entry.leave_date;
     const vlBefore = changeEmployee ? round2(fiscalPoolBalance(changeEmployee, 'vl', changeFy)) : null;
     const slBefore = changeEmployee ? round2(fiscalPoolBalance(changeEmployee, 'sl', changeFy)) : null;
 
@@ -5533,7 +5720,7 @@ function planLeaveWithoutPayConversion(employee, groupRows) {
   groupRows.forEach(row => {
     const pool = creditPoolForType(row.leave_type);
     if (!pool) return;
-    const key = `${fiscalYearForDate(row.leave_date)}:${pool}`;
+    const key = `${poolPeriodFor(pool, row.leave_date)}:${pool}`;
     alreadyCountedAgainstSelf[key] = round2((alreadyCountedAgainstSelf[key] || 0) + dayFractionForEntry(row));
   });
 
@@ -5547,10 +5734,11 @@ function planLeaveWithoutPayConversion(employee, groupRows) {
     const pool = creditPoolForType(row.leave_type);
     if (!pool) return; // already LNP/HLNP — nothing to do
 
-    const fy = fiscalYearForDate(row.leave_date);
+    const fy = poolPeriodFor(pool, row.leave_date);
+    const vlFy = poolPeriodFor('vl', row.leave_date);
     const key = `${fy}:${pool}`;
 
-    const balanceBeforeGroup = round2(poolBalance(employee, pool, fy) + (alreadyCountedAgainstSelf[key] || 0));
+    const balanceBeforeGroup = round2(poolBalance(employee, pool, row.leave_date) + (alreadyCountedAgainstSelf[key] || 0));
     const balanceBefore = round2(balanceBeforeGroup - (virtualUsed[key] || 0));
     const requestedFraction = dayFractionForEntry(row); // in "days" (1 = full day)
     const requestedHours = row.hours != null && row.hours !== '' ? Number(row.hours) : requestedFraction * 8;
@@ -5577,7 +5765,7 @@ function planLeaveWithoutPayConversion(employee, groupRows) {
     const isHalf = !!(LEAVE_TYPES[row.leave_type] && LEAVE_TYPES[row.leave_type].half);
     const spillPool = pool === 'sl' ? 'vl' : null; // only SL→VL spill; VL has no further paid fallback
     const spillLeaveType = pool === 'sl' ? (isHalf ? 'VLH' : 'VL') : null;
-    const spillKey = spillPool ? `${fy}:${spillPool}` : null;
+    const spillKey = spillPool ? `${vlFy}:${spillPool}` : null;
 
     if (pool === 'sl' && availableHours > 0) {
       slExhaustedHoursByFy[fy] = round2((slExhaustedHoursByFy[fy] || 0) + availableHours);
@@ -5592,7 +5780,7 @@ function planLeaveWithoutPayConversion(employee, groupRows) {
     // already virtually consumed by earlier rows in this same group)?
     const spillBalanceBefore = (spillPool && spillKey)
       ? round2(
-          round2(poolBalance(employee, spillPool, fy) + (alreadyCountedAgainstSelf[spillKey] || 0))
+          round2(poolBalance(employee, spillPool, row.leave_date) + (alreadyCountedAgainstSelf[spillKey] || 0))
           - (virtualUsed[spillKey] || 0)
         )
       : 0;
@@ -5607,18 +5795,18 @@ function planLeaveWithoutPayConversion(employee, groupRows) {
 
     let coveredNote;
     if (availableHours > 0 && spillCoveredHours > 0 && trueOverflowHours > 0) {
-      coveredNote = `Auto-converted: ${fiscalYearLabel(fy)} ${pool.toUpperCase()} credit (${availableHours}h) was exhausted and deducted; the remaining ${spillCoveredHours}h covered by VL credit; ${trueOverflowHours}h marked Leave Without Pay.`;
+      coveredNote = `Auto-converted: ${poolPeriodLabel(pool, fy)} ${pool.toUpperCase()} credit (${availableHours}h) was exhausted and deducted; the remaining ${spillCoveredHours}h covered by VL credit; ${trueOverflowHours}h marked Leave Without Pay.`;
     } else if (availableHours > 0 && spillCoveredHours > 0) {
-      coveredNote = `Auto-converted: ${fiscalYearLabel(fy)} ${pool.toUpperCase()} credit (${availableHours}h) was exhausted and deducted; the remaining ${spillCoveredHours}h covered by VL credit.`;
+      coveredNote = `Auto-converted: ${poolPeriodLabel(pool, fy)} ${pool.toUpperCase()} credit (${availableHours}h) was exhausted and deducted; the remaining ${spillCoveredHours}h covered by VL credit.`;
     } else if (availableHours > 0) {
       // Primary pool gave what it could, but nothing else covers the rest
-      coveredNote = `Auto-converted: ${fiscalYearLabel(fy)} ${pool.toUpperCase()} credit (${availableHours}h) was exhausted and deducted; the remaining ${overflowHours}h marked Leave Without Pay.`;
+      coveredNote = `Auto-converted: ${poolPeriodLabel(pool, fy)} ${pool.toUpperCase()} credit (${availableHours}h) was exhausted and deducted; the remaining ${overflowHours}h marked Leave Without Pay.`;
     } else if (spillLeaveType && spillCoveredHours > 0 && trueOverflowHours > 0) {
-      coveredNote = `Auto-converted: no remaining ${fiscalYearLabel(fy)} ${pool.toUpperCase()} credit — ${spillCoveredHours}h covered by VL credit; ${trueOverflowHours}h marked Leave Without Pay.`;
+      coveredNote = `Auto-converted: no remaining ${poolPeriodLabel(pool, fy)} ${pool.toUpperCase()} credit — ${spillCoveredHours}h covered by VL credit; ${trueOverflowHours}h marked Leave Without Pay.`;
     } else if (spillLeaveType && spillCoveredHours > 0) {
       coveredNote = `Auto-converted: covered by VL credit after ${pool.toUpperCase()} was exhausted.`;
     } else {
-      coveredNote = `Auto-marked Leave Without Pay — no remaining ${fiscalYearLabel(fy)} credit.`;
+      coveredNote = `Auto-marked Leave Without Pay — no remaining ${poolPeriodLabel(pool, fy)} credit.`;
     }
 
     if (spillLeaveType && spillCoveredHours > 0) {
@@ -5649,8 +5837,8 @@ function planLeaveWithoutPayConversion(employee, groupRows) {
         // Vacation credit can't cover the WHOLE request -> the WHOLE request is Leave
         // Without Pay and the remaining credit is kept (never spent on a part of it).
         const wholeNote = availableHours > 0
-          ? `Auto-marked Leave Without Pay — ${fiscalYearLabel(fy)} VL credit (${availableHours}h) is not enough to cover this ${requestedHours}h leave, so the whole leave is unpaid and the credit is kept.`
-          : `Auto-marked Leave Without Pay — no remaining ${fiscalYearLabel(fy)} VL credit.`;
+          ? `Auto-marked Leave Without Pay — ${poolPeriodLabel(pool, fy)} VL credit (${availableHours}h) is not enough to cover this ${requestedHours}h leave, so the whole leave is unpaid and the credit is kept.`
+          : `Auto-marked Leave Without Pay — no remaining ${poolPeriodLabel(pool, fy)} VL credit.`;
         updates.push({ id: row.id, fields: { leave_type: noPayEquivalent(row.leave_type), hours: requestedHours, note: appendAutoNote(row.note, wholeNote), sl_exhausted_hours_here: null } });
       } else {
         updates.push({ id: row.id, fields: { leave_type: noPayEquivalent(row.leave_type), hours: overflowHours, note: appendAutoNote(row.note, coveredNote), sl_exhausted_hours_here: availableHours > 0 ? availableHours : null } });
@@ -5699,12 +5887,12 @@ function reconcileChronologicalPriority(employee, groupRows, conversionUpdates) 
     if (!originalPool) return; // wasn't drawing from a credit pool to begin with — nothing to reconsider
 
     let stillNeeded = dayFractionForEntry(row);
-    const fy = fiscalYearForDate(row.leave_date);
+    const fy = poolPeriodFor(originalPool, row.leave_date);
 
     const laterEntries = entriesForEmployee(employee.id)
       .filter(e => e.id !== row.id)
       .filter(e => !groupRows.some(r => r.id === e.id)) // never touch another row from this same approval — planLeaveWithoutPayConversion already handled ordering within the group itself
-      .filter(e => fiscalYearForDate(e.leave_date) === fy)
+      .filter(e => poolPeriodFor(originalPool, e.leave_date) === fy)
       .filter(e => creditPoolForType(e.leave_type) === originalPool)
       .filter(e => e.leave_date > row.leave_date)
       .sort((a, b) => a.leave_date < b.leave_date ? 1 : a.leave_date > b.leave_date ? -1 : 0); // furthest-out date bumped first
@@ -5770,8 +5958,8 @@ async function applySlExhaustionSnapshotAdjustments(employee, slExhaustedHoursBy
     // rather than assumed — if it ever does happen, this logs a
     // warning and skips, leaving it for a manual Leave Credits fix
     // rather than silently writing an incorrect number.
-    if (storedBalanceFiscalYear(employee) !== fy) {
-      console.warn(`Skipping automatic SL adjustment for ${employee.display_name} — their stored balance belongs to a different fiscal year than ${fiscalYearLabel(fy)}. Please adjust manually via Leave Credits.`);
+    if (storedPoolPeriod(employee, 'sl') !== fy) {
+      console.warn(`Skipping automatic SL adjustment for ${employee.display_name} — their stored balance belongs to a different fiscal year than ${poolPeriodLabel('sl', fy)}. Please adjust manually via Leave Credits.`);
       continue;
     }
     const newSlBalance = round2((employee.sl_balance ?? 0) - (exhaustedHours / 8));
@@ -5847,8 +6035,8 @@ async function decideRequest(id, decision, opts = {}) {
     // the race entirely — there's no window left for anything to
     // interfere, since nothing has changed in the database yet.
     const empForNotif = notifEmployeeId ? state.employees.find(e => e.id === notifEmployeeId) : null;
-    let vlBefore = empForNotif && fyNum ? round2(fiscalPoolBalance(empForNotif, 'vl', fyNum)) : null;
-    let slBefore = empForNotif && fyNum ? round2(fiscalPoolBalance(empForNotif, 'sl', fyNum)) : null;
+    let vlBefore = empForNotif && fyNum ? round2(fiscalPoolBalance(empForNotif, 'vl', isoDate(new Date()))) : null;
+    let slBefore = empForNotif && fyNum ? round2(fiscalPoolBalance(empForNotif, 'sl', isoDate(new Date()))) : null;
     // For a type-change approval specifically, the raw value above is
     // misleading as a "previously" figure: while the request sat
     // pending, the entry was excluded from the balance ENTIRELY
@@ -5968,8 +6156,8 @@ async function decideRequest(id, decision, opts = {}) {
       if (empForNotif && fyNum && vlBefore !== null) {
         const freshEmp = state.employees.find(e => e.id === notifEmployeeId);
         if (freshEmp) {
-          const vlAfter = round2(fiscalPoolBalance(freshEmp, 'vl', fyNum));
-          const slAfter = round2(fiscalPoolBalance(freshEmp, 'sl', fyNum));
+          const vlAfter = round2(fiscalPoolBalance(freshEmp, 'vl', isoDate(new Date())));
+          const slAfter = round2(fiscalPoolBalance(freshEmp, 'sl', isoDate(new Date())));
           const firstName = freshEmp.display_name.split(' ')[0];
           const changed = vlAfter !== vlBefore || slAfter !== slBefore;
           if (!changed) {
@@ -6000,8 +6188,8 @@ async function decideRequest(id, decision, opts = {}) {
       if (empForNotif && fyNum && vlBefore !== null) {
         const freshEmp = state.employees.find(e => e.id === notifEmployeeId);
         if (freshEmp) {
-          const vlAfter = round2(fiscalPoolBalance(freshEmp, 'vl', fyNum));
-          const slAfter = round2(fiscalPoolBalance(freshEmp, 'sl', fyNum));
+          const vlAfter = round2(fiscalPoolBalance(freshEmp, 'vl', isoDate(new Date())));
+          const slAfter = round2(fiscalPoolBalance(freshEmp, 'sl', isoDate(new Date())));
           const firstName = freshEmp.display_name.split(' ')[0];
           const changed = vlAfter !== vlBefore || slAfter !== slBefore;
           if (!changed) {
@@ -6230,7 +6418,7 @@ async function saveCreditEdit(empId) {
   const today = isoDate(new Date());
   const alreadyBookedFutureDays = (pool) => round2(
     entriesForEmployee(employee.id)
-      .filter(e => fiscalYearForDate(e.leave_date) === fy)
+      .filter(e => poolPeriodFor(pool, e.leave_date) === poolPeriodFor(pool, today))
       .filter(e => e.leave_date >= today)
       .filter(e => creditPoolForType(e.leave_type) === pool)
       .reduce((sum, e) => sum + dayFractionForEntry(e), 0)
@@ -9874,14 +10062,13 @@ function requestCreditCheck(employee_id, leave_type, fromDate, toDate, hours) {
   const needed = round2(perDay * dates.length);
   const emp = state.employees.find(e => e.id === employee_id);
   if (!emp) return { ok: true };
-  const fy = fiscalYearForDate(fromDate);
   const pendingFor = (pool) => state.leaveEntries
     .filter(e => e.employee_id === employee_id && e.status === STATUS.PENDING
-      && fiscalYearForDate(e.leave_date) === fy
+      && poolPeriodFor(pool, e.leave_date) === poolPeriodFor(pool, fromDate)
       && LEAVE_TYPES[e.leave_type] && LEAVE_TYPES[e.leave_type].credit === pool)
     .reduce((sum, e) => sum + dayFractionForEntry(e), 0);
-  const vlFree = Math.max(0, round2(poolBalance(emp, 'vl', fy) - pendingFor('vl')));
-  const slFree = Math.max(0, round2(poolBalance(emp, 'sl', fy) - pendingFor('sl')));
+  const vlFree = Math.max(0, round2(poolBalance(emp, 'vl', fromDate) - pendingFor('vl')));
+  const slFree = Math.max(0, round2(poolBalance(emp, 'sl', fromDate) - pendingFor('sl')));
   const usesSl = def.credit === 'sl';
   const available = usesSl ? round2(slFree + vlFree) : vlFree;
   if (needed <= available + 0.001) return { ok: true };
