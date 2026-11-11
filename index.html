@@ -2048,7 +2048,7 @@ function renderCurrentView() {
 // has to remember to hard-refresh. Uses a tiny Supabase table
 // (app_version: key text primary key, value text) so it works across
 // every browser without needing a server push.
-const APP_VERSION = '2026-11-12-leave-fix-4';
+const APP_VERSION = '2026-11-12-leave-fix-5';
 
 async function checkAppVersionAndReloadIfStale() {
   try {
@@ -6109,7 +6109,8 @@ function renderCreditTableCard() {
       </div>`;
   }).join('');
 
-  const teamSection = `
+  // Only the admin can see everyone's credits; members see their own only.
+  const teamSection = !admin ? '' : `
     <div style="margin-top:12px; border-top:1px solid var(--line-soft); padding-top:10px; display:flex; flex-direction:column; flex:1; min-height:0;">
       <div style="display:flex; align-items:center; justify-content:space-between; gap:8px;">
         <button type="button" id="credits-team-toggle" ${editMode ? 'disabled' : ''} style="background:none; border:none; padding:2px 0; font-family:inherit; font-size:12.5px; font-weight:600; color:var(--teal); cursor:${editMode ? 'default' : 'pointer'};">
