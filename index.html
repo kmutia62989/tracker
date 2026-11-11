@@ -756,7 +756,7 @@
         <div>
           <span class="eyebrow">Restricted</span>
           <h1>Task Manager</h1>
-          <p class="lede">Daily task tracking for Kristina and Jeinna.</p>
+          <p class="lede">Daily task tracking for Kristina.</p>
         </div>
         <div></div>
       </div>
@@ -1112,12 +1112,18 @@ async function hashPassword(plain) {
 function isAdmin() {
   return !!state.profile && state.profile.role === 'admin';
 }
+// OT Admin: admins, plus anyone given the 'ot_admin' role (first or second role).
+// Can manage OT filing dates, edit/confirm anyone's OT entries and download the
+// report. Reset, PIP status and deleting entries stay with the admin only.
+function isOtAdmin() {
+  return isAdmin() || (!!state.profile && (state.profile.role === 'ot_admin' || state.profile.role2 === 'ot_admin'));
+}
 
 // Employee Management is intentionally narrower than the general admin
 // role — it's restricted to two specific people by name, regardless of
 // whether someone else also happens to have the 'admin' role for
 // approvals/reports elsewhere in the app.
-const EMPLOYEE_MANAGEMENT_ALLOWED_NAMES = ['Kristina Mutia', 'Jeinna Louise Perez'];
+const EMPLOYEE_MANAGEMENT_ALLOWED_NAMES = ['Kristina Mutia'];
 function canManageEmployees() {
   return !!state.profile && EMPLOYEE_MANAGEMENT_ALLOWED_NAMES.includes(state.profile.display_name);
 }
@@ -1175,7 +1181,7 @@ function canManageIps() {
 // wherever Peer Review editing is gated) — any admin can correct it,
 // not just Jeinna.
 function canEditAutoSyncedIpsFields() {
-  return !!state.profile && state.profile.display_name === 'Jeinna Louise Perez';
+  return !!state.profile && state.profile.display_name === 'Kristina Mutia';
 }
 // QA role: narrower than canManageIps() — grants edit access to the
 // QA Accuracy section's ENTRIES ONLY (add/edit/delete Major/Minor
@@ -1199,7 +1205,7 @@ function canManageIpsQa() {
 // used for the "QA disputes need your review" My Alerts item.
 function canResolveIpsQaDisputes() {
   if (!state.profile) return false;
-  return ['Kristina Mutia', 'Jeinna Louise Perez'].includes(state.profile.display_name);
+  return ['Kristina Mutia'].includes(state.profile.display_name);
 }
 function canEditIpsRow(employeeId) {
   if (!state.profile) return false;
@@ -1340,7 +1346,7 @@ function canEditTeamFunds() {
 // open tab is exactly the scenario this exists to guard against.
 const MAINTENANCE_WINDOW_START_HOUR = 2;  // 2:00 AM
 const MAINTENANCE_WINDOW_END_HOUR = 10;   // 10:00 AM
-const MAINTENANCE_EXEMPT_NAMES = ['Kristina Mutia', 'Jeinna Louise Perez'];
+const MAINTENANCE_EXEMPT_NAMES = ['Kristina Mutia'];
 
 function inMaintenanceWindow() {
   const now = new Date();
@@ -1578,8 +1584,8 @@ function initNav() {
 
   const qaGuideNavItem = document.getElementById('nav-qa-guide');
   if (qaGuideNavItem) {
-    const isJeinna = state.profile && state.profile.display_name === 'Jeinna Louise Perez';
-    qaGuideNavItem.style.display = (isJeinna || state.lqPlaybookVisible) ? '' : 'none';
+    const isOwner = state.profile && state.profile.display_name === 'Kristina Mutia';
+    qaGuideNavItem.style.display = (isOwner || state.lqPlaybookVisible) ? '' : 'none';
   }
 
 
@@ -1660,7 +1666,7 @@ function switchView(viewName) {
   // lqPlaybookVisible toggle (app_settings.lq_playbook_visible) —
   // exactly the same pattern as PrioList's own visibility toggle below.
   // Defaults to hidden until Jeinna explicitly turns it on.
-  if (viewName === 'qa-guide' && (!state.profile || state.profile.display_name !== 'Jeinna Louise Perez') && !state.lqPlaybookVisible) {
+  if (viewName === 'qa-guide' && (!state.profile || state.profile.display_name !== 'Kristina Mutia') && !state.lqPlaybookVisible) {
     viewName = 'dashboard';
   }
 
@@ -1672,7 +1678,7 @@ function switchView(viewName) {
   // Checked here (not just the nav-click handler) to also catch a
   // stale saved session restoring this view on refresh, or any other
   // direct call into switchView('priolist').
-  if (viewName === 'priolist' && !state.priolistVisible && state.profile?.display_name !== 'Jeinna Louise Perez') {
+  if (viewName === 'priolist' && !state.priolistVisible && state.profile?.display_name !== 'Kristina Mutia') {
     window.location.href = 'https://accountmedia-phteam.com/productivity';
     return;
   }
@@ -1930,8 +1936,8 @@ function startNavBadgePolling() {
     state.lqPlaybookVisible = row.value === true || row.value === 'true';
     const navItem = document.getElementById('nav-qa-guide');
     if (navItem) {
-      const isJeinna = state.profile && state.profile.display_name === 'Jeinna Louise Perez';
-      navItem.style.display = (isJeinna || state.lqPlaybookVisible) ? '' : 'none';
+      const isOwner = state.profile && state.profile.display_name === 'Kristina Mutia';
+      navItem.style.display = (isOwner || state.lqPlaybookVisible) ? '' : 'none';
     }
     if (state.currentView === 'qa-guide') renderQaGuide();
   });
@@ -2042,7 +2048,7 @@ function renderCurrentView() {
 // has to remember to hard-refresh. Uses a tiny Supabase table
 // (app_version: key text primary key, value text) so it works across
 // every browser without needing a server push.
-const APP_VERSION = '2026-11-11-secure-login-stage-b';
+const APP_VERSION = '2026-11-12-stage-c-owner-cleanup';
 
 async function checkAppVersionAndReloadIfStale() {
   try {
@@ -6636,7 +6642,7 @@ function renderPrioList() {
 function renderPriolistEyeIcon() {
   const slot = document.getElementById('priolist-eye');
   if (!slot) return;
-  if (state.profile?.display_name !== 'Jeinna Louise Perez') { slot.innerHTML = ''; return; }
+  if (state.profile?.display_name !== 'Kristina Mutia') { slot.innerHTML = ''; return; }
   const visible = state.priolistVisible;
   slot.innerHTML = `
     <button id="btn-priolist-eye" title="${visible ? 'Hide PrioList for everyone' : 'Show PrioList for everyone'}" style="
@@ -6665,7 +6671,7 @@ function renderPriolistEyeIcon() {
 }
 
 async function togglePriolistVisibility() {
-  if (state.profile?.display_name !== 'Jeinna Louise Perez') { showToast('Only Jeinna can control this.', true); return; }
+  if (state.profile?.display_name !== 'Kristina Mutia') { showToast('Only Kristina can control this.', true); return; }
   const newValue = !state.priolistVisible;
   const { error } = await sb.from('app_settings').upsert({
     key: 'priolist_visible', value: newValue, updated_by: state.profile.display_name, updated_at: new Date().toISOString(),
@@ -6685,7 +6691,7 @@ async function togglePriolistVisibility() {
 function renderLqPlaybookEyeIcon() {
   const slot = document.getElementById('lq-playbook-eye');
   if (!slot) return;
-  if (state.profile?.display_name !== 'Jeinna Louise Perez') { slot.innerHTML = ''; return; }
+  if (state.profile?.display_name !== 'Kristina Mutia') { slot.innerHTML = ''; return; }
   const visible = state.lqPlaybookVisible;
   slot.innerHTML = `
     <button id="btn-lq-playbook-eye" title="${visible ? 'Hide LQ Playbook for everyone' : 'Show LQ Playbook for everyone'}" style="
@@ -6714,7 +6720,7 @@ function renderLqPlaybookEyeIcon() {
 }
 
 async function toggleLqPlaybookVisibility() {
-  if (state.profile?.display_name !== 'Jeinna Louise Perez') { showToast('Only Jeinna can control this.', true); return; }
+  if (state.profile?.display_name !== 'Kristina Mutia') { showToast('Only Kristina can control this.', true); return; }
   const newValue = !state.lqPlaybookVisible;
   const { error } = await sb.from('app_settings').upsert({
     key: 'lq_playbook_visible', value: newValue, updated_by: state.profile.display_name, updated_at: new Date().toISOString(),
@@ -8020,7 +8026,7 @@ async function submitLiEntry(e, editing) {
 // Deleting a confirmed OT entry outright is intentionally narrower than
 // the general admin role — restricted to Jeinna specifically, same
 // named-person pattern as Employee Management and Personal Notes.
-const OT_FILING_DELETE_ALLOWED_NAME = 'Jeinna Louise Perez';
+const OT_FILING_DELETE_ALLOWED_NAME = 'Kristina Mutia';
 function canDeleteOtEntry() {
   return !!state.profile && state.profile.display_name === OT_FILING_DELETE_ALLOWED_NAME;
 }
@@ -8063,7 +8069,7 @@ function renderOtFiling() {
   // clickable label + chevron instead of three separate buttons.
   // Order matches exactly what's requested: Manage dates, Download
   // report, Reset.
-  actionsEl.innerHTML = isAdmin() ? `
+  actionsEl.innerHTML = isOtAdmin() ? `
     <div style="position:relative; flex-shrink:0;" id="ot-actions-wrap">
       <button type="button" id="ot-actions-toggle" style="
         display:flex; align-items:center; gap:6px; padding:9px 14px;
@@ -8075,7 +8081,7 @@ function renderOtFiling() {
       <div id="ot-actions-menu" style="display:none; position:absolute; top:calc(100% + 6px); right:0; z-index:50; background:var(--paper-raised); border-radius:8px; box-shadow:var(--shadow-lg); min-width:160px; overflow:hidden;">
         <div class="ot-actions-option" data-action="manage-dates" style="padding:9px 14px; font-size:12.5px; color:var(--ink); cursor:pointer;">Manage dates</div>
         <div class="ot-actions-option" data-action="download-report" style="padding:9px 14px; font-size:12.5px; color:var(--ink); cursor:pointer;">Download report</div>
-        <div class="ot-actions-option" data-action="reset" style="padding:9px 14px; font-size:12.5px; color:var(--coral); cursor:pointer; border-top:1px solid var(--line-soft);">Reset</div>
+        ${isAdmin() ? `<div class="ot-actions-option" data-action="reset" style="padding:9px 14px; font-size:12.5px; color:var(--coral); cursor:pointer; border-top:1px solid var(--line-soft);">Reset</div>` : ''}
       </div>
     </div>
   ` : '';
@@ -8107,7 +8113,7 @@ function renderOtFiling() {
     return;
   }
 
-  const admin = isAdmin();
+  const admin = isOtAdmin();
   const dates = state.otFilingDates.map(d => d.filing_date);
 
   // Anyone with active data (typed in, not necessarily confirmed yet)
@@ -8554,7 +8560,7 @@ function openOtAmendModal(employeeId, filingDate) {
   const entry = getOtEntry(employeeId, filingDate);
   if (!entry) return;
   const isOwner = employeeId === state.profile.employee_id;
-  if (!isAdmin() && !isOwner) { showToast('You can only amend your own OT entry.', true); return; }
+  if (!isOtAdmin() && !isOwner) { showToast('You can only amend your own OT entry.', true); return; }
   const empForPipCheck = state.employees.find(e => e.id === employeeId);
   if (empForPipCheck && empForPipCheck.is_pip) { showToast('This employee is on PIP and cannot have OT entries amended.', true); return; }
 
@@ -8622,7 +8628,7 @@ function openOtAmendModal(employeeId, filingDate) {
 // is more destructive than Amend — Amend corrects the values in place,
 // this removes the record entirely.
 async function deleteOtEntry(employeeId, filingDate) {
-  if (!canDeleteOtEntry()) { showToast('Only Jeinna can delete an OT entry.', true); return; }
+  if (!canDeleteOtEntry()) { showToast('Only Kristina can delete an OT entry.', true); return; }
   const entry = getOtEntry(employeeId, filingDate);
   if (!entry) return;
   const emp = state.employees.find(e => e.id === employeeId);
@@ -8633,7 +8639,7 @@ async function deleteOtEntry(employeeId, filingDate) {
   if (error) { showToast('Could not delete the entry.', true); return; }
   showToast(`${name}'s OT entry for ${formatPrettyDate(filingDate)} deleted.`);
 
-  pushOtFilingNotification(`Jeinna deleted ${name}'s OT entry for ${formatPrettyDate(filingDate)}.`);
+  pushOtFilingNotification(`${(state.profile && state.profile.display_name) || 'An admin'} deleted ${name}'s OT entry for ${formatPrettyDate(filingDate)}.`);
 
   await loadOtHoursEntries();
   renderOtFiling();
@@ -8695,7 +8701,7 @@ async function resetOtFiling() {
 }
 
 function downloadOtFilingReport() {
-  if (!isAdmin()) { showToast('Only admins can download reports.', true); return; }
+  if (!isOtAdmin()) { showToast('Only admins can download reports.', true); return; }
 
   const dates = state.otFilingDates.map(d => d.filing_date).sort();
   if (!dates.length) { showToast('No OT filing dates to report on.', true); return; }
@@ -8831,7 +8837,7 @@ async function saveOtEstimatedPendingLeads(filingDate, rawValue) {
 // day that's no longer confirmed for OT shouldn't leave a stale hours
 // number sitting around still counting toward headcount/leads totals.
 async function saveOtAvailability(employeeId, filingDate, checked) {
-  if (!isAdmin() && employeeId !== state.profile.employee_id) {
+  if (!isOtAdmin() && employeeId !== state.profile.employee_id) {
     showToast('You can only confirm your own OT availability.', true);
     renderOtFiling();
     return;
@@ -8881,7 +8887,7 @@ async function saveOtAvailability(employeeId, filingDate, checked) {
 }
 
 async function saveOtHours(employeeId, filingDate, rawValue) {
-  if (!isAdmin() && employeeId !== state.profile.employee_id) {
+  if (!isOtAdmin() && employeeId !== state.profile.employee_id) {
     showToast('You can only log your own OT hours.', true);
     renderOtFiling();
     return;
@@ -8965,7 +8971,7 @@ function openOtConfirmModal(employeeId, filingDate) {
     return;
   }
 
-  if (!isAdmin() && employeeId !== state.profile.employee_id) {
+  if (!isOtAdmin() && employeeId !== state.profile.employee_id) {
     showToast('You can only confirm your own OT hours.', true);
     return;
   }
@@ -9018,7 +9024,7 @@ function openOtConfirmModal(employeeId, filingDate) {
 }
 
 function openOtManageDatesModal() {
-  if (!isAdmin()) { showToast('Only admins can manage OT filing dates.', true); return; }
+  if (!isOtAdmin()) { showToast('Only admins can manage OT filing dates.', true); return; }
 
   const datesListHtml = state.otFilingDates.length
     ? state.otFilingDates.map(d => `
@@ -9299,6 +9305,7 @@ function openAddEmployeeModal() {
             <option value="treasurer">Treasurer</option>
             <option value="ips">IPS</option>
             <option value="qa">QA</option>
+            <option value="ot_admin">OT Admin</option>
           </select>
         </div>
         <div class="field" style="margin-top:14px;">
@@ -9309,6 +9316,7 @@ function openAddEmployeeModal() {
             <option value="treasurer">Treasurer</option>
             <option value="ips">IPS</option>
             <option value="qa">QA</option>
+            <option value="ot_admin">OT Admin</option>
           </select>
         </div>
       </div>
@@ -9424,6 +9432,7 @@ function openEditRoleModal(employeeId) {
           <option value="treasurer" ${account.role === 'treasurer' ? 'selected' : ''}>Treasurer</option>
           <option value="ips" ${account.role === 'ips' ? 'selected' : ''}>IPS</option>
           <option value="qa" ${account.role === 'qa' ? 'selected' : ''}>QA</option>
+          <option value="ot_admin" ${account.role === 'ot_admin' ? 'selected' : ''}>OT Admin</option>
         </select>
       </div>
       <div class="field">
@@ -9434,6 +9443,7 @@ function openEditRoleModal(employeeId) {
           <option value="treasurer" ${account.role2 === 'treasurer' ? 'selected' : ''}>Treasurer</option>
           <option value="ips" ${account.role2 === 'ips' ? 'selected' : ''}>IPS</option>
           <option value="qa" ${account.role2 === 'qa' ? 'selected' : ''}>QA</option>
+          <option value="ot_admin" ${account.role2 === 'ot_admin' ? 'selected' : ''}>OT Admin</option>
         </select>
       </div>
       <button type="submit" class="btn btn-primary" style="justify-content:center;">Save role</button>
@@ -10494,9 +10504,9 @@ const QA_GUIDE_RULES = [
 function renderQaGuide() {
   const el = document.getElementById('qa-guide-content');
   if (!el) return;
-  const isJeinna = state.profile && state.profile.display_name === 'Jeinna Louise Perez';
+  const isOwner = state.profile && state.profile.display_name === 'Kristina Mutia';
   renderLqPlaybookEyeIcon();
-  if (!isJeinna && !state.lqPlaybookVisible) { el.innerHTML = ''; return; }
+  if (!isOwner && !state.lqPlaybookVisible) { el.innerHTML = ''; return; }
 
   const activeTab = qaGuideState.tab === 'rules' ? 'rules' : 'check';
   const hasKey = !!localStorage.getItem('qa_guide_gemini_key');
@@ -15467,9 +15477,9 @@ function renderPersonalAlertsFromCache() {
 // TASK MANAGER — restricted to Kristina Mutia and Jeinna Louise Perez
 // =====================================================================
 
-const TM_USERS = ['kristina', 'jeinna']; // tab keys
-const TM_LABELS = { kristina: 'Kristina Mutia', jeinna: 'Jeinna Louise Perez' };
-const TM_ALLOWED = ['Kristina Mutia', 'Jeinna Louise Perez'];
+const TM_USERS = ['kristina']; // tab keys
+const TM_LABELS = { kristina: 'Kristina Mutia' };
+const TM_ALLOWED = ['Kristina Mutia'];
 
 function canAccessTaskManager() {
   return !!state.profile && TM_ALLOWED.includes(state.profile.display_name);
@@ -15517,7 +15527,7 @@ async function ensureTodayCompletions(today) {
   // For each recurring task, make sure a completion row exists for today
   const needed = [];
   for (const task of tmState.tasks.filter(t => t.is_recurring)) {
-    const owners = task.owner === 'both' ? ['kristina', 'jeinna'] : [task.owner];
+    const owners = task.owner === 'both' ? ['kristina'] : [task.owner];
     for (const person of owners) {
       const exists = tmState.completions.find(c => c.task_id === task.id && c.assigned_to === person && c.task_date === today);
       if (!exists) {
@@ -15801,7 +15811,6 @@ function openTmAddTaskModal() {
         <label for="tm-task-owner">Assign to</label>
         <select id="tm-task-owner" style="width:100%; padding:9px 10px; border-radius:6px; border:1px solid var(--line); font-family:inherit;">
           <option value="kristina">Kristina Mutia</option>
-          <option value="jeinna">Jeinna Louise Perez</option>
           <option value="both">Both</option>
         </select>
       </div>
@@ -15844,7 +15853,7 @@ function openTmAddTaskModal() {
     tmState.tasks.push(data);
     // Create today's completion immediately
     const today = isoDate(new Date());
-    const owners = owner === 'both' ? ['kristina', 'jeinna'] : [owner];
+    const owners = owner === 'both' ? ['kristina'] : [owner];
     const newCompletions = owners.map(p => ({ task_id: data.id, assigned_to: p, task_date: today, completed: false }));
     const { data: cd } = await sb.from('task_completions').insert(newCompletions).select();
     if (cd) tmState.completions.push(...cd);
@@ -15964,7 +15973,7 @@ async function saveTmNote(completionId, note) {
 // read. When the owner deletes one, it's removed from Supabase for
 // everyone (single row, no duplicates).
 
-const NOTIFICATION_OWNER_NAME = 'Jeinna Louise Perez';
+const NOTIFICATION_OWNER_NAME = 'Kristina Mutia';
 // Unread count for the badge. The DB `read` flag belongs to the OWNER
 // only. Other admins get a device-local "last seen" timestamp instead,
 // so opening the panel clears THEIR badge without touching the owner's.
@@ -16219,7 +16228,7 @@ function showNotifPanel(kind) {
   panel.style.flexDirection = 'column';
 
   panel.querySelector('#notif-clear-all')?.addEventListener('click', async () => {
-    if (!canManageNotifications()) { showToast('Only Jeinna can clear notifications.', true); return; }
+    if (!canManageNotifications()) { showToast('Only Kristina can clear notifications.', true); return; }
     if (kind === 'team_funds') state.tfNotifications = [];
     else if (kind === 'ot_filing') state.otFilingNotifications = [];
     else if (kind === 'ips') state.ipsNotifications = [];
@@ -16240,7 +16249,7 @@ function showNotifPanel(kind) {
   panel.querySelectorAll('.notif-dismiss-btn').forEach(btn => {
     btn.addEventListener('click', async (e) => {
       e.stopPropagation();
-      if (!canManageNotifications()) { showToast('Only Jeinna can dismiss notifications.', true); return; }
+      if (!canManageNotifications()) { showToast('Only Kristina can dismiss notifications.', true); return; }
       const id = btn.dataset.id;
       if (kind === 'team_funds') state.tfNotifications = state.tfNotifications.filter(n => String(n.id) !== String(id));
       else if (kind === 'ot_filing') state.otFilingNotifications = state.otFilingNotifications.filter(n => String(n.id) !== String(id));
