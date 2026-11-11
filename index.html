@@ -2048,7 +2048,7 @@ function renderCurrentView() {
 // has to remember to hard-refresh. Uses a tiny Supabase table
 // (app_version: key text primary key, value text) so it works across
 // every browser without needing a server push.
-const APP_VERSION = '2026-11-12-stage-c-owner-cleanup';
+const APP_VERSION = '2026-11-12-leave-fix-2';
 
 async function checkAppVersionAndReloadIfStale() {
   try {
@@ -2333,6 +2333,10 @@ async function ensureYearEndHolidayBlocks() {
   // full reload, since loadAllData already finished loading entries
   // before this ran.
   await loadLeaveEntries();
+
+  // The year-end holiday is always PAID (VL) for everyone. The old automatic
+  // "convert to Leave No Pay when credit is short" pass below is switched off.
+  return;
 
   // This insert bypasses decideRequest entirely (there's no admin
   // clicking Approve for an auto-generated holiday), so the usual
@@ -3159,6 +3163,16 @@ function round2(n) {
   return Math.round(n * 100) / 100;
 }
 
+// Label shown inside a leave "stamp". Hourly Leave No Pay reads "2-LNP"
+// (2 hours no pay); everything else keeps its normal short name.
+function leaveStampLabel(type, hours, showHours) {
+  const def = LEAVE_TYPES[type];
+  const short = def ? def.short : type;
+  const h = (hours != null && hours !== '') ? Number(hours) : null;
+  if (type === 'LNP' && h && h < 8) return `${h}-LNP`;
+  return short + (showHours && h ? ` ${h}h` : '');
+}
+
 // =====================================================================
 // DASHBOARD VIEW
 // =====================================================================
@@ -3357,7 +3371,7 @@ function showDashOutTodayModal() {
     <div style="display:flex; flex-direction:column; gap:10px; max-height:420px; overflow-y:auto;">
       ${entries.map(e => `
         <div style="display:flex; align-items:center; gap:10px; padding:8px 0; border-bottom:1px solid var(--line-soft);">
-          <span class="stamp ${LEAVE_TYPES[e.leave_type].cls}">${LEAVE_TYPES[e.leave_type].short}${e.hours ? ` ${e.hours}h` : ''}</span>
+          <span class="stamp ${LEAVE_TYPES[e.leave_type].cls}">${leaveStampLabel(e.leave_type, e.hours, true)}</span>
           <span style="font-weight:600;">${employeeName(e.employee_id)}</span>
           <span class="faint" style="margin-left:auto; font-size:12px;">${escapeHtml(e.note || '')}</span>
         </div>
@@ -3388,7 +3402,7 @@ function showDashPendingModal() {
     <div style="display:flex; flex-direction:column; gap:10px; max-height:420px; overflow-y:auto;">
       ${pending.map(e => `
         <div style="display:flex; align-items:center; gap:10px; padding:8px 0; border-bottom:1px solid var(--line-soft);">
-          <span class="stamp ${e.status === STATUS.CANCELLATION_PENDING ? 'pending' : LEAVE_TYPES[e.leave_type].cls}">${e.status === STATUS.CANCELLATION_PENDING ? 'Cancel' : LEAVE_TYPES[e.leave_type].short}</span>
+          <span class="stamp ${e.status === STATUS.CANCELLATION_PENDING ? 'pending' : LEAVE_TYPES[e.leave_type].cls}">${e.status === STATUS.CANCELLATION_PENDING ? 'Cancel' : leaveStampLabel(e.leave_type, e.hours, false)}</span>
           <span style="font-weight:600;">${employeeName(e.employee_id)}</span>
           <span class="faint" style="margin-left:auto; font-size:12px;">${formatPrettyDate(e.leave_date)}</span>
         </div>
@@ -3471,7 +3485,7 @@ function showDashLwopModal() {
       <div style="display:flex; flex-direction:column; gap:10px; max-height:400px; overflow-y:auto;">
         ${lwopCutoff.map(e => `
           <div style="display:flex; align-items:center; gap:10px; padding:8px 0; border-bottom:1px solid var(--line-soft);">
-            <span class="stamp el">${LEAVE_TYPES[e.leave_type].short}${e.hours ? ` ${e.hours}h` : ''}</span>
+            <span class="stamp el">${leaveStampLabel(e.leave_type, e.hours, true)}</span>
             <span style="font-weight:600;">${employeeName(e.employee_id)}</span>
             <span class="faint" style="font-size:11.5px; margin-left:auto;">${formatPrettyDate(e.leave_date)}</span>
           </div>
@@ -3792,7 +3806,7 @@ function renderMyRequestsPanel() {
                   ${canEditDates ? `<span class="edit-dates-link" data-id="${g.firstId}" style="cursor:pointer; color:var(--teal-soft); font-size:11px; text-decoration:underline; display:inline-block; margin-top:4px;">Edit dates</span>` : ''}
                   ${canChangeType ? `<span class="change-my-leave-type-link" data-id="${g.firstId}" style="cursor:pointer; color:var(--teal-soft); font-size:11px; text-decoration:underline; display:inline-block; margin-top:4px; margin-left:${canEditDates ? '10px' : '0'};">Change type</span>` : ''}
                 </div>
-                <span class="stamp ${status === STATUS.PENDING ? 'pending' : LEAVE_TYPES[g.leave_type].cls}">${LEAVE_TYPES[g.leave_type].short}</span>
+                <span class="stamp ${status === STATUS.PENDING ? 'pending' : LEAVE_TYPES[g.leave_type].cls}">${leaveStampLabel(g.leave_type, g.days[0].hours, false)}</span>
               </div>
               <div style="display:flex; justify-content:space-between; align-items:center; margin-top:8px;">
                 <div class="faint" style="font-size:11px; text-transform:capitalize;">${status}</div>
@@ -4676,7 +4690,7 @@ function openDayPanel(dateIso) {
     const canEditDates = e.requested_by !== SYSTEM_HOLIDAY_MARKER && e.request_group_id && groupEnd && groupEnd >= today && (admin || isOwner);
     return `
     <div style="display:flex; align-items:center; gap:10px; padding:8px 0; border-bottom:1px solid var(--line-soft);">
-      <span class="stamp ${(e.status === STATUS.PENDING || e.status === STATUS.CANCELLATION_PENDING) ? 'pending' : LEAVE_TYPES[e.leave_type].cls}">${LEAVE_TYPES[e.leave_type].short}</span>
+      <span class="stamp ${(e.status === STATUS.PENDING || e.status === STATUS.CANCELLATION_PENDING) ? 'pending' : LEAVE_TYPES[e.leave_type].cls}">${leaveStampLabel(e.leave_type, e.hours, false)}</span>
       <div style="flex:1;">
         <div style="font-weight:600;">${employeeName(e.employee_id)}</div>
         <div class="faint" style="font-size:12px;">${escapeHtml(e.note || 'No note')}${groupSuffix}</div>
@@ -4843,7 +4857,6 @@ function openChangeLeaveTypeModal(entryId, currentType) {
   if (!entry) return;
 
   const typeOptions = Object.keys(LEAVE_TYPES)
-    .filter(t => t !== 'LNP' && t !== 'HLNP') // LNP/HLNP are auto-derived overflow markers, not something an admin should hand-pick here
     .map(t => `<option value="${t}" ${t === currentType ? 'selected' : ''}>${LEAVE_TYPES[t].label} (${t})</option>`)
     .join('');
 
@@ -4906,6 +4919,7 @@ function openChangeLeaveTypeModal(entryId, currentType) {
       // Hours fully describe the duration, so the half-day distinction is
       // irrelevant here — normalize VLH/SLH/ELH down to their base type.
       newType = newType.replace(/H$/, '');
+      if (newType === 'HLNP') newType = 'LNP';
       fields.leave_type = newType;
       fields.hours = hours;
     } else {
@@ -4990,7 +5004,6 @@ function openMyChangeLeaveTypeModal(entryId) {
   const hasHours = entry.hours != null && entry.hours !== '';
 
   const typeOptions = Object.keys(LEAVE_TYPES)
-    .filter(t => t !== 'LNP' && t !== 'HLNP') // LNP/HLNP are auto-derived overflow markers, not something an employee should hand-pick here
     .map(t => `<option value="${t}" ${t === currentType ? 'selected' : ''}>${LEAVE_TYPES[t].label} (${t})</option>`)
     .join('');
 
@@ -5053,6 +5066,7 @@ function openMyChangeLeaveTypeModal(entryId) {
       // Hours fully describe the duration, so the half-day distinction is
       // irrelevant here — normalize VLH/SLH/ELH down to their base type.
       newType = newType.replace(/H$/, '');
+      if (newType === 'HLNP') newType = 'LNP';
       fields.leave_type = newType;
       fields.hours = hours;
     } else {
@@ -5152,7 +5166,7 @@ function renderPendingPanel() {
                     ${canEditDates ? `<span class="edit-dates-link" data-id="${g.firstId}" style="cursor:pointer; color:var(--teal-soft); font-size:11px; text-decoration:underline; display:inline-block; margin-top:4px;">Edit dates</span>` : ''}
                     ${canChangeType ? `<span class="change-my-leave-type-link" data-id="${g.firstId}" style="cursor:pointer; color:var(--teal-soft); font-size:11px; text-decoration:underline; display:inline-block; margin-top:4px; margin-left:${canEditDates ? '10px' : '0'};">Change type</span>` : ''}
                   </div>
-                  <span class="stamp ${(status === STATUS.PENDING || status === STATUS.CANCELLATION_PENDING) ? 'pending' : LEAVE_TYPES[g.leave_type].cls}">${LEAVE_TYPES[g.leave_type].short}</span>
+                  <span class="stamp ${(status === STATUS.PENDING || status === STATUS.CANCELLATION_PENDING) ? 'pending' : LEAVE_TYPES[g.leave_type].cls}">${leaveStampLabel(g.leave_type, g.days[0].hours, false)}</span>
                 </div>
                 <div style="display:flex; justify-content:space-between; align-items:center; margin-top:8px;">
                   <div class="faint" style="font-size:11px;">${formatStatusLabel(status)}</div>
@@ -5204,7 +5218,7 @@ function renderPendingPanel() {
                   ${isCancellation ? `<div class="faint" style="font-size:10.5px; margin-top:3px; font-weight:600; text-transform:uppercase; letter-spacing:0.04em; color:var(--coral);">Cancellation request</div>` : ''}
                   ${isTypeChange ? `<div class="faint" style="font-size:10.5px; margin-top:3px; font-weight:600; text-transform:uppercase; letter-spacing:0.04em; color:var(--amber);">Type Change: ${LEAVE_TYPES[typeChangeFrom] ? LEAVE_TYPES[typeChangeFrom].short : typeChangeFrom} → ${LEAVE_TYPES[g.leave_type].short}</div>` : ''}
                 </div>
-                <span class="stamp pending">${LEAVE_TYPES[g.leave_type].short}</span>
+                <span class="stamp pending">${leaveStampLabel(g.leave_type, g.days[0].hours, false)}</span>
               </div>
               ${isCancellation && cancelNote ? `<div class="muted" style="font-size:12px; margin-top:6px;"><span class="faint">Reason:</span> ${escapeHtml(cancelNote)}</div>` : ''}
               ${!isCancellation && g.note ? `<div class="muted" style="font-size:12px; margin-top:6px;">${escapeHtml(g.note)}</div>` : ''}
@@ -5212,10 +5226,13 @@ function renderPendingPanel() {
                 ${isCancellation
                   ? `<button class="btn btn-sm approve-cancellation-btn" data-id="${g.firstId}" style="flex:1; justify-content:center; background:var(--coral); color:#FFFFFF;">Approve Cancellation</button>
                      <button class="btn btn-ghost btn-sm decline-cancellation-btn" data-id="${g.firstId}" style="flex:1; justify-content:center;">Decline</button>`
-                  : `<button class="btn btn-primary btn-sm approve-btn" data-id="${g.firstId}" style="flex:1; justify-content:center;">Approve</button>
+                  : `<button class="btn btn-primary btn-sm approve-btn" data-id="${g.firstId}" style="flex:1; justify-content:center;">Approve${LEAVE_TYPES[g.leave_type] && LEAVE_TYPES[g.leave_type].credit ? ' (paid)' : ''}</button>
                      <button class="btn btn-ghost btn-sm decline-btn" data-id="${g.firstId}" style="flex:1; justify-content:center;">Decline</button>`
                 }
               </div>
+              ${!isCancellation && LEAVE_TYPES[g.leave_type] && LEAVE_TYPES[g.leave_type].credit
+                ? `<button class="btn btn-ghost btn-sm approve-lnp-btn" data-id="${g.firstId}" title="Approve this leave but mark it as Leave No Pay — no credits are used" style="width:100%; justify-content:center; margin-top:6px; color:var(--coral);">Approve as No Pay (LNP)</button>`
+                : ''}
             </div>
           `;
           }).join('')}
@@ -5365,6 +5382,10 @@ function attachPendingHandlers() {
     disablePendingCardButtons(b);
     decideRequest(b.dataset.id, STATUS.APPROVED);
   }));
+  document.querySelectorAll('.approve-lnp-btn').forEach(b => b.addEventListener('click', () => {
+    disablePendingCardButtons(b);
+    decideRequest(b.dataset.id, STATUS.APPROVED, { asLnp: true });
+  }));
   document.querySelectorAll('.decline-btn').forEach(b => b.addEventListener('click', () => {
     disablePendingCardButtons(b);
     decideRequest(b.dataset.id, STATUS.DECLINED);
@@ -5379,7 +5400,7 @@ function attachPendingHandlers() {
 function disablePendingCardButtons(clickedBtn) {
   const card = clickedBtn.closest('.pending-card');
   if (!card) return;
-  card.querySelectorAll('.approve-btn, .decline-btn').forEach(b => { b.disabled = true; });
+  card.querySelectorAll('.approve-btn, .approve-lnp-btn, .decline-btn').forEach(b => { b.disabled = true; });
 }
 
 // Given an employee and a leave type, returns which credit pool it draws
@@ -5576,7 +5597,16 @@ function planLeaveWithoutPayConversion(employee, groupRows) {
       // the primary-pool-covered portion, if any, has no row of its
       // own, so there's nothing left to split off separately). Same
       // sl_exhausted_hours_here treatment as above.
-      updates.push({ id: row.id, fields: { leave_type: noPayEquivalent(row.leave_type), hours: overflowHours, note: appendAutoNote(row.note, coveredNote), sl_exhausted_hours_here: availableHours > 0 ? availableHours : null } });
+      if (pool === 'vl') {
+        // Vacation credit can't cover the WHOLE request -> the WHOLE request is Leave
+        // Without Pay and the remaining credit is kept (never spent on a part of it).
+        const wholeNote = availableHours > 0
+          ? `Auto-marked Leave Without Pay — ${fiscalYearLabel(fy)} VL credit (${availableHours}h) is not enough to cover this ${requestedHours}h leave, so the whole leave is unpaid and the credit is kept.`
+          : `Auto-marked Leave Without Pay — no remaining ${fiscalYearLabel(fy)} VL credit.`;
+        updates.push({ id: row.id, fields: { leave_type: noPayEquivalent(row.leave_type), hours: requestedHours, note: appendAutoNote(row.note, wholeNote), sl_exhausted_hours_here: null } });
+      } else {
+        updates.push({ id: row.id, fields: { leave_type: noPayEquivalent(row.leave_type), hours: overflowHours, note: appendAutoNote(row.note, coveredNote), sl_exhausted_hours_here: availableHours > 0 ? availableHours : null } });
+      }
     }
   });
 
@@ -5721,7 +5751,7 @@ function appendAutoNote(existingNote, autoText) {
 // against rows that the first call has already split or converted.
 const requestsBeingDecided = new Set();
 
-async function decideRequest(id, decision) {
+async function decideRequest(id, decision, opts = {}) {
   if (!isAdmin()) { showToast('Only admins can approve or decline requests.', true); return; }
 
   const entry = state.leaveEntries.find(e => e.id === id);
@@ -5790,6 +5820,21 @@ async function decideRequest(id, decision) {
       if (oldPool === 'sl' && slBefore !== null) slBefore = round2(slBefore - oldFraction);
     }
 
+    // "Approve as No Pay": switch every pending day of this request to its LNP
+    // equivalent first (hours kept), so no credit is used for it.
+    if (opts.asLnp) {
+      const toConvert = (groupId
+        ? state.leaveEntries.filter(e => e.request_group_id === groupId && e.status === STATUS.PENDING)
+        : state.leaveEntries.filter(e => e.id === id));
+      for (const r of toConvert) {
+        if (!LEAVE_TYPES[r.leave_type] || !LEAVE_TYPES[r.leave_type].credit) continue;
+        const { error: lnpErr } = await sb.from('leave_entries')
+          .update({ leave_type: noPayEquivalent(r.leave_type), note: appendAutoNote(r.note, 'Approved as Leave No Pay by admin.') })
+          .eq('id', r.id);
+        if (lnpErr) { console.error('Could not switch to LNP:', lnpErr); showToast('Could not mark it as No Pay.', true); return; }
+      }
+    }
+
     const approvalFields = { status: decision, approved_by: state.profile.display_name, decided_at: new Date().toISOString(), pending_type_change_from: null };
     let query = sb.from('leave_entries').update(approvalFields);
     let { error } = groupId ? await query.eq('request_group_id', groupId) : await query.eq('id', id);
@@ -5823,7 +5868,8 @@ async function decideRequest(id, decision) {
         : state.leaveEntries.filter(e => e.id === id && e.status === STATUS.APPROVED);
 
       const { updates: rawUpdates, inserts, slExhaustedHoursByFy } = planLeaveWithoutPayConversion(employee, groupRows);
-      const { extraUpdates, revertedRowIds } = reconcileChronologicalPriority(employee, groupRows, rawUpdates);
+      // Chronological-priority swapping removed: it bumped OTHER approved leave (incl. the year-end holiday days) to LNP to pay for a new request, which created/shifted credit. A request that the balance can't cover is now simply LNP.
+      const extraUpdates = [], revertedRowIds = new Set();
       const updates = rawUpdates.filter(u => !revertedRowIds.has(u.id)).concat(extraUpdates);
       if (updates.length || inserts.length) {
         console.log('LWNP/spillover conversion applied:', { employee: employee.display_name, groupRows, updates, inserts, revertedForChronologicalPriority: [...revertedRowIds] });
@@ -5952,33 +5998,26 @@ function renderCreditTableCard() {
       const sl = getSLBalance(emp);
       const isMe = emp.id === state.profile.employee_id;
 
+      const cell = 'padding:7px 8px; border-left:1px solid var(--line-soft); text-align:center; font-variant-numeric:tabular-nums;';
+      const fmt = (n) => `<span style="${n > 0 ? 'font-weight:600; color:var(--ink);' : 'color:var(--ink-faint);'}">${n}</span>`;
+
       if (editMode) {
         return `
-          <div class="credit-row credit-row-editing" data-emp-id="${emp.id}" style="display:flex; justify-content:space-between; align-items:center; padding:7px 8px; border-radius:8px; border-bottom:1px solid var(--line-soft); font-size:12.5px; gap:8px; ${isMe ? 'background:var(--row-highlight);' : ''}">
-            <span style="overflow:hidden; text-overflow:ellipsis;">${escapeHtml(emp.display_name)}</span>
-            <span style="display:flex; gap:6px; flex-shrink:0; align-items:center;">
-              <span title="Vacation credits" style="display:flex; align-items:center; gap:3px;">
-                <span class="faint" style="font-size:10.5px;">VL</span>
-                <input type="text" inputmode="decimal" class="credit-input vl-input" data-emp-id="${emp.id}" value="${vl}" style="width:48px; padding:2px 4px; border:1px solid var(--gold-line); border-radius:4px; font-size:12px; text-align:right;">
-              </span>
-              <span title="Sick credits" style="display:flex; align-items:center; gap:3px;">
-                <span class="faint" style="font-size:10.5px;">SL</span>
-                <input type="text" inputmode="decimal" class="credit-input sl-input" data-emp-id="${emp.id}" value="${sl}" style="width:48px; padding:2px 4px; border:1px solid var(--gold-line); border-radius:4px; font-size:12px; text-align:right;">
-              </span>
-              <button class="btn btn-primary btn-sm save-credit-btn" data-emp-id="${emp.id}" style="padding:3px 9px; font-size:11px;">Save</button>
-            </span>
-          </div>
+          <tr class="credit-row credit-row-editing" data-emp-id="${emp.id}" style="${isMe ? 'background:var(--row-highlight);' : ''}">
+            <td style="padding:6px 8px; max-width:120px; overflow:hidden; text-overflow:ellipsis; white-space:nowrap;">${escapeHtml(emp.display_name)}</td>
+            <td style="${cell}"><input type="text" inputmode="decimal" class="credit-input vl-input" data-emp-id="${emp.id}" value="${vl}" title="Vacation credits" style="width:46px; padding:2px 4px; border:1px solid var(--gold-line); border-radius:4px; font-size:12px; text-align:right;"></td>
+            <td style="${cell}"><input type="text" inputmode="decimal" class="credit-input sl-input" data-emp-id="${emp.id}" value="${sl}" title="Sick credits" style="width:46px; padding:2px 4px; border:1px solid var(--gold-line); border-radius:4px; font-size:12px; text-align:right;"></td>
+            <td style="${cell}"><button class="btn btn-primary btn-sm save-credit-btn" data-emp-id="${emp.id}" style="padding:3px 9px; font-size:11px;">Save</button></td>
+          </tr>
         `;
       }
 
       return `
-        <div class="credit-row" data-emp-id="${emp.id}" style="display:flex; justify-content:space-between; align-items:center; padding:7px 8px; border-radius:8px; border-bottom:1px solid var(--line-soft); font-size:12.5px; gap:8px; ${isMe ? 'background:var(--row-highlight);' : ''}">
-          <span style="overflow:hidden; text-overflow:ellipsis;">${escapeHtml(emp.display_name)}</span>
-          <span style="display:flex; gap:10px; align-items:center; flex-shrink:0;">
-            <span class="faint" title="Vacation credits">VL ${vl}</span>
-            <span class="faint" title="Sick credits">SL ${sl}</span>
-          </span>
-        </div>
+        <tr class="credit-row" data-emp-id="${emp.id}" style="${isMe ? 'background:var(--row-highlight);' : ''}">
+          <td style="padding:7px 8px; overflow:hidden; text-overflow:ellipsis;">${escapeHtml(emp.display_name)}</td>
+          <td style="${cell}" title="Vacation credits">${fmt(vl)}</td>
+          <td style="${cell}" title="Sick credits">${fmt(sl)}</td>
+        </tr>
       `;
     }).join('');
 
@@ -5990,9 +6029,20 @@ function renderCreditTableCard() {
       </div>
       ${editMode ? `<p class="faint" style="font-size:11px; margin:0 0 10px;">Update a balance and click Save. Click "Done" when finished.</p>` : ''}
       <div class="credit-scroll">
-        ${rows || '<p class="muted">No employees yet.</p>'}
+        ${rows ? `<table class="credit-table" style="width:100%; border-collapse:collapse; font-size:12.5px;">
+          <thead>
+            <tr>
+              <th style="position:sticky; top:0; background:var(--paper-raised); text-align:left; padding:7px 8px; font-size:10.5px; letter-spacing:0.06em; text-transform:uppercase; color:var(--ink-soft); border-bottom:2px solid var(--line);">Employee</th>
+              <th style="position:sticky; top:0; background:var(--paper-raised); text-align:center; padding:7px 8px; width:${editMode ? 62 : 54}px; font-size:10.5px; letter-spacing:0.06em; text-transform:uppercase; color:var(--ink-soft); border-bottom:2px solid var(--line); border-left:1px solid var(--line-soft);">VL</th>
+              <th style="position:sticky; top:0; background:var(--paper-raised); text-align:center; padding:7px 8px; width:${editMode ? 62 : 54}px; font-size:10.5px; letter-spacing:0.06em; text-transform:uppercase; color:var(--ink-soft); border-bottom:2px solid var(--line); border-left:1px solid var(--line-soft);">SL</th>
+              ${editMode ? '<th style="position:sticky; top:0; background:var(--paper-raised); border-bottom:2px solid var(--line);"></th>' : ''}
+            </tr>
+          </thead>
+          <tbody>${rows}</tbody>
+        </table>` : '<p class="muted">No employees yet.</p>'}
       </div>
       <style>
+        .credit-table tbody tr{ border-bottom:1px solid var(--line-soft); }
         .credit-scroll{
           flex: 1;
           min-height: 0;
@@ -9621,9 +9671,13 @@ function openRequestModal() {
   const eligibleEmployees = state.employees
     .filter(e => e.active !== false)
     .sort(byKristinaFirstThenName);
+  const reqTypeLabels = { LNP: 'Leave No Pay (whole day)', HLNP: 'Leave No Pay (half day)' };
   const typeOptions = Object.entries(LEAVE_TYPES)
-    .filter(([k]) => !['LNP','HLNP'].includes(k))
-    .map(([k,v]) => `<option value="${k}">${v.label}</option>`).join('');
+    .map(([k,v]) => `<option value="${k}">${reqTypeLabels[k] || v.label}</option>`).join('');
+  const myEmp = state.employees.find(e => e.id === (state.profile && state.profile.employee_id));
+  const myCreditsHtml = (!isAdmin() && myEmp)
+    ? `<p class="faint" style="font-size:12px; margin:-4px 0 0;">Your credits: <strong>VL ${getVLBalance(myEmp)}</strong> · <strong>SL ${getSLBalance(myEmp)}</strong>. If you don't have enough, file it as <strong>Leave No Pay (LNP)</strong>.</p>`
+    : '';
 
   const employeeFieldHtml = isAdmin()
     ? searchableEmployeeFieldHtml('req-employee', 'Employee', eligibleEmployees, null)
@@ -9643,6 +9697,8 @@ function openRequestModal() {
           ${typeOptions}
         </select>
       </div>
+      ${myCreditsHtml}
+      <div class="login-error" id="req-credit-warning" style="display:none;"></div>
       <div class="field" style="display:flex; gap:10px;">
         <div style="flex:1;">
           <label for="req-date-from">From</label>
@@ -9695,7 +9751,65 @@ function openRequestModal() {
     }
   });
 
-  document.getElementById('request-form').addEventListener('submit', submitLeaveRequest);
+  const reqForm = document.getElementById('request-form');
+  reqForm.addEventListener('submit', submitLeaveRequest);
+  reqForm.addEventListener('input', refreshRequestCreditWarning);
+  reqForm.addEventListener('change', refreshRequestCreditWarning);
+}
+
+// Is there enough leave credit for what's being requested? Paid types only.
+// SL/EL may also use VL (same rule the approval uses). Credit already tied up
+// in the person's OTHER pending requests is subtracted.
+function requestCreditCheck(employee_id, leave_type, fromDate, toDate, hours) {
+  const def = LEAVE_TYPES[leave_type];
+  if (!def || !def.credit || !employee_id || !fromDate) return { ok: true };
+  const dates = datesInRange(fromDate, toDate || fromDate, { skipWeekends: true });
+  if (!dates.length) return { ok: true };
+  const perDay = hours ? hours / 8 : (def.half ? 0.5 : 1);
+  const needed = round2(perDay * dates.length);
+  const emp = state.employees.find(e => e.id === employee_id);
+  if (!emp) return { ok: true };
+  const fy = fiscalYearForDate(fromDate);
+  const pendingFor = (pool) => state.leaveEntries
+    .filter(e => e.employee_id === employee_id && e.status === STATUS.PENDING
+      && fiscalYearForDate(e.leave_date) === fy
+      && LEAVE_TYPES[e.leave_type] && LEAVE_TYPES[e.leave_type].credit === pool)
+    .reduce((sum, e) => sum + dayFractionForEntry(e), 0);
+  const vlFree = Math.max(0, round2(poolBalance(emp, 'vl', fy) - pendingFor('vl')));
+  const slFree = Math.max(0, round2(poolBalance(emp, 'sl', fy) - pendingFor('sl')));
+  const usesSl = def.credit === 'sl';
+  const available = usesSl ? round2(slFree + vlFree) : vlFree;
+  if (needed <= available + 0.001) return { ok: true };
+  const what = usesSl ? 'SL/VL' : 'VL';
+  return {
+    ok: false,
+    msg: `You no longer have enough ${what} credits for this leave (needed ${needed} day${needed === 1 ? '' : 's'}, available ${available}). Please file it as Leave No Pay (LNP) instead.`,
+  };
+}
+
+function readRequestFormForCredit() {
+  const employeeSelect = document.getElementById('req-employee');
+  const employee_id = employeeSelect ? employeeSelect.value : state.profile.employee_id;
+  let leave_type = document.getElementById('req-type').value;
+  const useHours = document.getElementById('req-use-hours').checked;
+  const fromDate = document.getElementById('req-date-from').value;
+  const toDate = useHours ? fromDate : document.getElementById('req-date-to').value;
+  let hours = null;
+  if (useHours) {
+    hours = parseFloat(document.getElementById('req-hours').value);
+    if (isNaN(hours) || hours <= 0) hours = null;
+    leave_type = leave_type.replace(/H$/, '');
+  }
+  return { employee_id, leave_type, fromDate, toDate, hours };
+}
+
+function refreshRequestCreditWarning() {
+  const box = document.getElementById('req-credit-warning');
+  if (!box) return;
+  const f = readRequestFormForCredit();
+  const r = requestCreditCheck(f.employee_id, f.leave_type, f.fromDate, f.toDate, f.hours);
+  box.style.display = r.ok ? 'none' : 'block';
+  box.textContent = r.ok ? '' : r.msg;
 }
 
 async function submitLeaveRequest(e) {
@@ -9724,7 +9838,7 @@ async function submitLeaveRequest(e) {
       return;
     }
     if (hours === 4) {
-      showToast('4 hours is a half day — please untick the hours option and pick the "(Half)" leave type from the dropdown instead.', true);
+      showToast('4 hours is a half day — please untick the hours option and pick the half-day option from the dropdown instead.', true);
       return;
     }
     if (hours === 8) {
@@ -9734,6 +9848,7 @@ async function submitLeaveRequest(e) {
     // Hours fully describe the duration, so the half-day distinction is
     // irrelevant here — normalize VLH/SLH/ELH down to their base type.
     leave_type = leave_type.replace(/H$/, '');
+    if (leave_type === 'HLNP') leave_type = 'LNP';
   }
 
   toInput.style.borderColor = toDate ? 'var(--line)' : 'var(--coral)';
@@ -9752,6 +9867,15 @@ async function submitLeaveRequest(e) {
 
   const dates = datesInRange(fromDate, toDate, { skipWeekends: true });
   if (!dates.length) { showToast('That range has no workdays in it.', true); return; }
+
+  // Paid leave needs enough credit. Staff must file it as LNP instead; an
+  // admin may still submit it (and decide paid / unpaid at approval).
+  const creditCheck = requestCreditCheck(employee_id, leave_type, fromDate, toDate, hours);
+  if (!creditCheck.ok) {
+    refreshRequestCreditWarning();
+    if (!isAdmin()) { showToast('Not enough credits — please file this as Leave No Pay (LNP).', true); return; }
+    if (!confirm(creditCheck.msg + '\n\nSubmit it as paid anyway?')) return;
+  }
   if (dates.length > 30) {
     if (!confirm(`That's ${dates.length} workdays. Continue?`)) return;
   }
