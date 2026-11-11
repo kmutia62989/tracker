@@ -2048,7 +2048,7 @@ function renderCurrentView() {
 // has to remember to hard-refresh. Uses a tiny Supabase table
 // (app_version: key text primary key, value text) so it works across
 // every browser without needing a server push.
-const APP_VERSION = '2026-11-12-leave-fix-7';
+const APP_VERSION = '2026-11-12-leave-fix-8';
 
 async function checkAppVersionAndReloadIfStale() {
   try {
@@ -6255,18 +6255,20 @@ function renderCreditTableCard() {
   if (me) {
     const vl = getVLBalance(me), sl = getSLBalance(me);
     const reserved = reservedHolidayDays(me);
-    const tile = (label, num, accent) => `
+    const slYear = new Date().getFullYear(), vlFy = currentFiscalYear();
+    const tile = (label, num, accent, cover) => `
       <div style="flex:1; border-radius:14px; padding:12px 14px; background:var(--paper); border:1px solid var(--line-soft); border-top:3px solid ${accent};">
         <div class="faint" style="font-size:10.5px; letter-spacing:0.07em; text-transform:uppercase; font-weight:600;">${label}</div>
         <div style="font-family:var(--font-display); font-size:30px; font-weight:600; color:var(--ink); line-height:1.15; margin-top:2px;">${num}</div>
         <div class="faint" style="font-size:11px;">day${num === 1 ? '' : 's'} · ${round2(num * 8)} hrs</div>
+        <div class="faint" style="font-size:10.5px; margin-top:6px; padding-top:6px; border-top:1px solid var(--line-soft); line-height:1.4;">${cover}</div>
       </div>`;
     hero = `
       <div style="margin:10px 0 4px;">
         <div style="font-size:13px; font-weight:600; margin-bottom:8px;">${escapeHtml(me.display_name)} <span class="faint" style="font-weight:500;">· your credits</span></div>
         <div style="display:flex; gap:10px;">
-          ${tile('Vacation · VL', vl, 'var(--teal)')}
-          ${tile('Sick · SL', sl, 'var(--amber, #D9A441)')}
+          ${tile('Vacation · VL', vl, 'var(--teal)', `Covers <strong>Apr 1, ${vlFy} – Mar 31, ${vlFy + 1}</strong><br>Resets to 25 on <strong>Apr 1, ${vlFy + 1}</strong>`)}
+          ${tile('Sick · SL', sl, 'var(--amber, #D9A441)', `Covers <strong>Jan 1 – Dec 31, ${slYear}</strong><br>Resets to 6 on <strong>Jan 1, ${slYear + 1}</strong>`)}
         </div>
         ${reserved > 0 ? `<p class="faint" style="font-size:11px; margin:8px 0 0;">Your VL already includes <strong>${reserved} day${reserved === 1 ? '' : 's'}</strong> set aside for the Dec 25 – Jan 1 company holiday.</p>` : ''}
         <p class="faint" style="font-size:11px; margin:6px 0 0;">Not enough credits? File it as <strong>Leave No Pay (LNP)</strong>. EL uses SL first, then VL.</p>
