@@ -2048,7 +2048,7 @@ function renderCurrentView() {
 // has to remember to hard-refresh. Uses a tiny Supabase table
 // (app_version: key text primary key, value text) so it works across
 // every browser without needing a server push.
-const APP_VERSION = '2026-11-12-leave-fix-3';
+const APP_VERSION = '2026-11-12-leave-fix-4';
 
 async function checkAppVersionAndReloadIfStale() {
   try {
@@ -3240,7 +3240,8 @@ function renderDashboard() {
   const lwopCutoffEmployeeIds = new Set(lwopCutoff.map(e => e.employee_id));
   // Dashboard card: the cutoff that just ENDED is the one payroll is processing now.
   const lwopOpts = payrollCutoffOptions();
-  const lwopDash = { openCutoff: lwopOpts[0], endedCutoff: lwopOpts[1], open: lwopReportFor(lwopOpts[0]), processing: lwopReportFor(lwopOpts[1]) };
+  const lwopShown = payrollCutoffToShow();
+  const lwopShownReport = lwopReportFor(lwopShown);
 
   // Pending review = new leave requests AND cancellation requests —
   // both sit in the admin's Pending Requests panel awaiting action.
@@ -3345,15 +3346,16 @@ function renderDashboard() {
         <div style="font-family:var(--font-display); font-size:32px; color:var(--teal); font-weight:600;">${otConfirmedCount} / ${otLoggedCount}</div>
         <div class="muted" style="font-size:12.5px; margin-top:4px;">${latestOtDate ? (otLoggedCount ? `For ${formatPrettyDate(latestOtDate)}.` : 'No OT logged for the latest date.') : 'No OT filing dates open.'}</div>
       </div>
+      ${isAdmin() ? `
       <div class="card dashboard-clickable-card" style="padding:20px; cursor:pointer;" onclick="showDashLwopModal();">
         <div style="display:flex; align-items:center; gap:8px; margin-bottom:10px;">
           <span class="dot-mark el"></span>
           <span class="faint" style="font-size:11px; letter-spacing:0.08em; text-transform:uppercase; font-weight:600;">Leave Without Pay</span>
         </div>
-        <div style="font-family:var(--font-display); font-size:32px; color:var(--teal); font-weight:600;">${lwopDash.processing.people.length}</div>
-        <div class="muted" style="font-size:12.5px; margin-top:4px;">${lwopDash.processing.people.length ? `${lwopDash.processing.totalDays} day${lwopDash.processing.totalDays === 1 ? '' : 's'} to deduct · ${lwopDash.endedCutoff.label}` : `No Leave No Pay · ${lwopDash.endedCutoff.label}`}</div>
-        <div class="faint" style="font-size:11.5px; margin-top:6px;">Open now (${lwopDash.openCutoff.label}): ${lwopDash.open.people.length} member${lwopDash.open.people.length === 1 ? '' : 's'}</div>
-      </div>
+        <div style="font-family:var(--font-display); font-size:32px; color:var(--teal); font-weight:600;">${lwopShownReport.people.length}</div>
+        <div class="muted" style="font-size:12.5px; margin-top:4px;">${lwopShownReport.people.length ? `member${lwopShownReport.people.length === 1 ? '' : 's'} · ${lwopShownReport.totalDays} day${lwopShownReport.totalDays === 1 ? '' : 's'} to deduct` : 'No Leave No Pay in this cutoff.'}</div>
+        <div class="faint" style="font-size:11.5px; margin-top:6px;">${lwopShown.label} · ${formatPrettyDate(lwopShown.start)} – ${formatPrettyDate(lwopShown.end)}</div>
+      </div>` : ''}
     </div>
   `;
 }
@@ -3506,14 +3508,17 @@ function lwopModalBodyHtml(idx) {
 
 function showDashLwopModal() {
   const opts = payrollCutoffOptions();
-  const optionHtml = opts.map((c, i) => `<option value="${i}" ${i === 1 ? 'selected' : ''}>${c.label}${i === 0 ? ' (open now)' : i === 1 ? ' (for payroll now)' : ''}</option>`).join('');
+  const shownStart = payrollCutoffToShow().start;
+  const shownIdx = Math.max(0, opts.findIndex(c => c.start === shownStart));
+  const optionHtml = opts.map((c, i) => `<option value="${i}" ${i === shownIdx ? 'selected' : ''}>${c.label}${i === shownIdx ? ' (current)' : ''}</option>`).join('');
+  if (!isAdmin()) return;
   openModal('Leave No Pay — for payroll deductions', `
     <div style="display:flex; gap:8px; align-items:center; margin-bottom:6px;">
       <select id="lwop-period" style="flex:1; padding:9px 10px; border-radius:6px; border:1px solid var(--line); font-family:inherit;">${optionHtml}</select>
       <button type="button" class="btn btn-ghost btn-sm" id="lwop-download">Download CSV</button>
     </div>
-    <div id="lwop-body">${lwopModalBodyHtml(1)}</div>
-    <p class="faint" style="font-size:11px; margin:10px 0 0;">1st Half = cutoff 20th–4th (paid before the 15th) · 2nd Half = cutoff 5th–19th (paid before the 30th). Only approved Leave No Pay is counted; 1 day = 8 hours.</p>
+    <div id="lwop-body">${lwopModalBodyHtml(shownIdx)}</div>
+    <p class="faint" style="font-size:11px; margin:10px 0 0;">1st Half = cutoff 20th–4th (processed the 5th) · 2nd Half = cutoff 5th–19th (processed the 20th). Only approved Leave No Pay is counted; 1 day = 8 hours.</p>
   `);
   const sel = document.getElementById('lwop-period');
   sel.addEventListener('change', () => { document.getElementById('lwop-body').innerHTML = lwopModalBodyHtml(Number(sel.value)); });
@@ -10275,6 +10280,19 @@ function payrollCutoffOptions() {
   const list = [payrollCutoffForDate(new Date())];
   for (let i = 0; i < 3; i++) list.push(payrollCutoffBefore(list[list.length - 1]));
   return list;
+}
+
+// The cutoff the Dashboard shows: payroll is processed the day AFTER a cutoff ends
+// (cutoff ends the 4th -> processed the 5th; ends the 19th -> processed the 20th).
+// So a cutoff stays on the Dashboard through the END of its processing day, then
+// the next one takes over.
+function payrollCutoffToShow() {
+  const today = new Date();
+  const open = payrollCutoffForDate(today);
+  const ended = payrollCutoffBefore(open);
+  const processDay = new Date(ended.end + 'T00:00:00');
+  processDay.setDate(processDay.getDate() + 1);
+  return isoDate(today) <= isoDate(processDay) ? ended : open;
 }
 
 // Approved Leave No Pay inside a cutoff, grouped per employee with day totals.
