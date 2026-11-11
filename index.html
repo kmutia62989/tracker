@@ -623,7 +623,7 @@
     <nav class="nav">
       <a class="nav-item" data-view="dashboard"><span class="dot"></span>Dashboard</a>
       <a class="nav-item" data-view="account-hub" id="nav-account-hub"><span class="dot"></span>Leave Tracker<span id="nav-lt-badge" class="nav-badge" style="display:none;"></span></a>
-      <a class="nav-item" data-view="payroll-confirmation"><span class="dot"></span>Payroll Confirmation</a>
+      <a class="nav-item" data-view="payroll-confirmation" id="nav-payroll"><span class="dot"></span>Payroll Confirmation<span id="nav-payroll-badge" class="nav-badge" style="display:none;"></span></a>
       <a class="nav-item" data-view="priolist"><span class="dot"></span>PrioList</a>
       <a class="nav-item" data-view="li-restriction"><span class="dot"></span>LI Restriction Daily Report</a>
       <a class="nav-item" data-view="ot-filing" id="nav-ot-filing"><span class="dot"></span>OT Hours Filing<span id="nav-ot-filing-badge" class="nav-badge" style="display:none;"></span></a>
@@ -709,6 +709,7 @@
         </div>
         <div id="priolist-actions"></div>
       </div>
+      <div id="red-files-banner"></div>
       <div id="priolist-content"></div>
     </section>
 
@@ -1523,6 +1524,8 @@ function logout() {
   if (otNavBadge) otNavBadge.style.display = 'none';
   const ipsNavBadge = document.getElementById('nav-ips-badge');
   if (ipsNavBadge) ipsNavBadge.style.display = 'none';
+  const payNavBadge = document.getElementById('nav-payroll-badge');
+  if (payNavBadge) payNavBadge.style.display = 'none';
   stopNavBadgePolling();
   stopMaintenanceWindowWatcher();
   document.getElementById('app').classList.add('hidden');
@@ -1743,6 +1746,7 @@ function switchView(viewName) {
 //   sidebar lights up too, and vice versa).
 // ---------------------------------------------------------------------
 function updateLeaveNavBadge() {
+  try { updatePayrollNavBadge(); } catch (e) { console.warn('payroll badge', e); }
   const badge = document.getElementById('nav-lt-badge');
   const ipsBadge = document.getElementById('nav-ips-badge');
   const admin = isAdmin();
@@ -2048,7 +2052,7 @@ function renderCurrentView() {
 // has to remember to hard-refresh. Uses a tiny Supabase table
 // (app_version: key text primary key, value text) so it works across
 // every browser without needing a server push.
-const APP_VERSION = '2026-11-12-leave-fix-8';
+const APP_VERSION = '2026-11-12-payroll-redfiles-1';
 
 async function checkAppVersionAndReloadIfStale() {
   try {
@@ -3321,6 +3325,7 @@ function renderDashboard() {
   const otConfirmedCount = otEntriesForDate.filter(e => e.confirmed === true).length;
 
   el.innerHTML = `
+    ${payrollOverdueAlertHtml(true)}
     <div style="display:grid; grid-template-columns: repeat(4, 1fr); gap:18px; margin-bottom:28px;">
       ${dashboardStatCard('Out today', [...new Set(todayEntries.map(e => e.employee_id))].length, [...new Set(todayEntries.map(e => employeeName(e.employee_id)))].join(', ') || 'No one is out today.', 'vl', `showDashOutTodayModal()`)}
       ${dashboardStatCard('Birthdays today', birthdaysToday.length, birthdaysToday.length ? birthdaysToday.map(emp => emp.display_name).join(', ') : 'No birthdays today.', 'sl', `showDashBirthdaysModal()`)}
@@ -6457,6 +6462,80 @@ function findConfirmation(employeeId, year, month, half) {
   );
 }
 
+// ---------------------------------------------------------------------
+// Payroll confirmation windows
+//   1st Half: opens on the 5th, expected by the 15th
+//   2nd Half: opens on the 20th, expected by the 30th (or the last day
+//             of the month in February)
+// Before it opens the cell is greyed out. Past the due date and still
+// unconfirmed = "overdue": the person gets a sidebar badge, a message on
+// the Payroll page and an alert on their Dashboard until they confirm.
+// ---------------------------------------------------------------------
+const PAYROLL_ENFORCE_FROM = '2026-11-05'; // older cutoffs are not chased
+function payrollWindow(year, month, half) {
+  const pad = n => String(n).padStart(2, '0');
+  const lastDay = new Date(year, month, 0).getDate();
+  return {
+    opens: `${year}-${pad(month)}-${half === 1 ? '05' : '20'}`,
+    due: `${year}-${pad(month)}-${pad(half === 1 ? 15 : Math.min(30, lastDay))}`,
+  };
+}
+function payrollIsOpen(year, month, half) {
+  return isoDate(new Date()) >= payrollWindow(year, month, half).opens;
+}
+function payrollOpensLabel(year, month, half) {
+  const w = payrollWindow(year, month, half);
+  const d = new Date(w.opens + 'T00:00:00');
+  return `${MONTH_NAMES[d.getMonth()].slice(0, 3)} ${d.getDate()}`;
+}
+function payrollOverdueFor(employeeId) {
+  const emp = state.employees.find(e => e.id === employeeId);
+  if (!emp) return [];
+  const today = isoDate(new Date());
+  const hired = emp.created_at ? String(emp.created_at).slice(0, 10) : '0000-00-00';
+  const out = [];
+  const now = new Date();
+  for (let back = 3; back >= 0; back--) {
+    const dt = new Date(now.getFullYear(), now.getMonth() - back, 1);
+    const y = dt.getFullYear(), m = dt.getMonth() + 1;
+    for (const half of [1, 2]) {
+      const w = payrollWindow(y, m, half);
+      if (w.opens < PAYROLL_ENFORCE_FROM) continue;
+      if (w.due < hired) continue;
+      if (today <= w.due) continue; // still on time
+      const c = findConfirmation(employeeId, y, m, half);
+      if (c && c.received) continue;
+      out.push({ year: y, month: m, half, due: w.due, label: `${MONTH_NAMES[m - 1]} ${y} · ${half === 1 ? '1st' : '2nd'} Half` });
+    }
+  }
+  return out;
+}
+function myPayrollOverdue() {
+  if (!state.profile || isAdmin() || !state.profile.employee_id) return [];
+  return payrollOverdueFor(state.profile.employee_id);
+}
+function updatePayrollNavBadge() {
+  const b = document.getElementById('nav-payroll-badge');
+  if (!b) return;
+  const n = myPayrollOverdue().length;
+  if (n > 0) { b.textContent = String(n); b.style.display = 'inline-flex'; }
+  else b.style.display = 'none';
+}
+function payrollOverdueAlertHtml(compact) {
+  const list = myPayrollOverdue();
+  if (!list.length) return '';
+  const names = list.map(o => `<strong>${escapeHtml(o.label)}</strong>`).join(', ');
+  return `
+    <div style="display:flex; align-items:flex-start; gap:12px; padding:14px 16px; margin:0 0 ${compact ? '20px' : '16px'}; border-radius:12px; background:var(--coral-wash, #FBE9E5); border:1px solid var(--coral); color:var(--ink);">
+      <span style="font-size:20px; line-height:1;">💸</span>
+      <div style="flex:1; font-size:13px; line-height:1.5;">
+        <div style="font-weight:700; margin-bottom:2px;">You haven't confirmed your payroll yet</div>
+        You haven't confirmed that you received your pay for ${names}. Please check your account and confirm it${compact ? '' : ' below'}.
+        ${compact ? `<div style="margin-top:8px;"><button class="btn btn-primary btn-sm" onclick="switchView('payroll-confirmation')">Go to Payroll Confirmation</button></div>` : ''}
+      </div>
+    </div>`;
+}
+
 function renderPayrollConfirmation() {
   const actionsEl = document.getElementById('payroll-confirmation-actions');
   const admin = isAdmin();
@@ -6469,6 +6548,7 @@ function renderPayrollConfirmation() {
     el.innerHTML = '<div class="loading-row">Loading…</div>';
     return;
   }
+  updatePayrollNavBadge();
 
   const year = state.payrollPeriodYear;
   const month = state.payrollPeriodMonth;
@@ -6493,6 +6573,8 @@ function renderPayrollConfirmation() {
     }).join('');
 
   el.innerHTML = `
+    ${payrollOverdueAlertHtml(false)}
+    <p class="faint" style="font-size:12px; margin:0 0 12px;">Confirmation opens on the <strong>5th</strong> (1st Half, please confirm by the 15th) and on the <strong>20th</strong> (2nd Half, please confirm by the 30th).</p>
     <div class="card" style="padding:22px;">
       <div class="payroll-scroll-wrap">
         <div class="payroll-sticky-top">
@@ -6556,10 +6638,24 @@ function renderPayrollCell(employeeId, year, month, half, confirmation, canMark)
       </span>
     `;
   }
-  if (canMark) {
-    return `<button class="btn btn-primary btn-sm mark-received-btn" data-emp-id="${employeeId}" data-half="${half}" style="justify-self:start; padding:5px 12px; font-size:11.5px;">Mark received</button>`;
+  const open = payrollIsOpen(year, month, half);
+  if (!open) {
+    const label = payrollOpensLabel(year, month, half);
+    return `
+      <span style="display:flex; flex-direction:column; gap:3px; align-items:flex-start;">
+        <span style="display:inline-block; padding:4px 10px; border-radius:999px; background:var(--line-soft); color:var(--ink-faint); font-size:11px; opacity:0.75;" title="Confirmation opens on ${label}">🔒 Opens ${label}</span>
+        ${isAdmin() && canMark ? `<button class="btn btn-ghost btn-sm mark-received-btn" data-emp-id="${employeeId}" data-half="${half}" style="padding:2px 8px; font-size:10.5px;">Mark anyway</button>` : ''}
+      </span>`;
   }
-  return `<span class="faint">Not yet</span>`;
+  const overdue = isoDate(new Date()) > payrollWindow(year, month, half).due && payrollWindow(year, month, half).opens >= PAYROLL_ENFORCE_FROM;
+  if (canMark) {
+    return `
+      <span style="display:flex; flex-direction:column; gap:3px; align-items:flex-start;">
+        <button class="btn btn-primary btn-sm mark-received-btn" data-emp-id="${employeeId}" data-half="${half}" style="padding:5px 12px; font-size:11.5px;">Mark received</button>
+        ${overdue ? '<span style="color:var(--coral); font-size:10.5px; font-weight:600;">Overdue — please confirm</span>' : ''}
+      </span>`;
+  }
+  return overdue ? `<span style="color:var(--coral); font-size:11.5px; font-weight:600;">Overdue</span>` : `<span class="faint">Not yet</span>`;
 }
 
 function shiftPayrollPeriod(delta) {
@@ -6575,6 +6671,10 @@ function shiftPayrollPeriod(delta) {
 async function markPayrollReceived(employeeId, half) {
   const year = state.payrollPeriodYear;
   const month = state.payrollPeriodMonth;
+  if (!isAdmin() && !payrollIsOpen(year, month, half)) {
+    showToast(`Confirmation for this half opens on ${payrollOpensLabel(year, month, half)}.`, true);
+    return;
+  }
   const nowIso = new Date().toISOString();
 
   const { error } = await sb.from('payroll_confirmations').upsert({
@@ -6591,6 +6691,7 @@ async function markPayrollReceived(employeeId, half) {
   showToast('Marked as received.');
   await loadPayrollConfirmations();
   renderPayrollConfirmation();
+  updatePayrollNavBadge();
 }
 
 async function undoPayrollReceived(confirmationId) {
@@ -6600,6 +6701,7 @@ async function undoPayrollReceived(confirmationId) {
   showToast('Confirmation removed.');
   await loadPayrollConfirmations();
   renderPayrollConfirmation();
+  updatePayrollNavBadge();
 }
 
 function downloadPayrollReport() {
@@ -6733,6 +6835,7 @@ function startPriolistPolling() {
   subscribeRealtime('priolist_entries', 'priolist_entries', onPriolistEntriesChange);
   subscribeRealtime('priolist_red_files', 'priolist_red_files', (payload) => {
     applyRealtimePatch(payload, () => state.redFiles, (v) => { state.redFiles = v; });
+    updateRedFilesBanner();
     rerenderRedFiles();
   });
   // PrioList's roster is derived from `employees` (active + non-manager)
@@ -6795,6 +6898,7 @@ function renderPrioList() {
   const actionsEl = document.getElementById('priolist-actions');
   const onRedFiles = state.priolistTab === 'red-files';
   renderPriolistEyeIcon();
+  updateRedFilesBanner();
   actionsEl.innerHTML = `
     <div style="display:flex; align-items:center; gap:8px;">
       ${isAdmin() ? `<button class="btn btn-ghost" id="priolist-reset-btn" style="color:var(--coral); border-color:var(--coral-wash);">Reset</button>` : ''}
@@ -7430,6 +7534,25 @@ async function resetPriolistAndRedFiles() {
 // PRIOLIST — RED FILES
 // =====================================================================
 
+function updateRedFilesBanner() {
+  const el = document.getElementById('red-files-banner');
+  if (!el) return;
+  const onPrio = state.currentView === 'priolist' && state.priolistTab !== 'red-files';
+  const open = (state.redFiles || []).filter(f => f.status === 'open');
+  if (!onPrio || !open.length) { el.innerHTML = ''; return; }
+  el.innerHTML = `
+    <div id="red-files-banner-bar" style="display:flex; align-items:center; gap:12px; padding:12px 16px; margin:0 0 16px; border-radius:12px; background:var(--coral); color:#fff; cursor:pointer; box-shadow:0 2px 8px rgba(0,0,0,0.12);">
+      <span style="font-size:20px;">🔴</span>
+      <div style="flex:1; font-size:13.5px; line-height:1.4;"><strong>Red Files are available!</strong> ${open.length} CampID${open.length === 1 ? ' is' : 's are'} waiting to be claimed.</div>
+      <span style="font-size:12.5px; font-weight:700; white-space:nowrap;">Open Red Files →</span>
+    </div>`;
+  document.getElementById('red-files-banner-bar').addEventListener('click', () => {
+    state.priolistTab = 'red-files';
+    try { sessionStorage.setItem('registry_priolist_tab', 'red-files'); } catch (e) {}
+    renderPrioList();
+  });
+}
+
 async function loadRedFiles() {
   const { data, error } = await sb.from('priolist_red_files').select('*').order('created_at', { ascending: false });
   if (error) {
@@ -7438,6 +7561,7 @@ async function loadRedFiles() {
     return;
   }
   state.redFiles = data || [];
+  updateRedFilesBanner();
 }
 
 function renderRedFiles() {
@@ -7868,6 +7992,7 @@ function startPayrollPolling() {
   });
   subscribeRealtime('payroll_confirmations', 'payroll_confirmations', (payload) => {
     applyRealtimePatch(payload, () => state.payrollConfirmations, (v) => { state.payrollConfirmations = v; });
+    updatePayrollNavBadge();
     rerender();
   });
 }
