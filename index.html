@@ -2048,7 +2048,7 @@ function renderCurrentView() {
 // has to remember to hard-refresh. Uses a tiny Supabase table
 // (app_version: key text primary key, value text) so it works across
 // every browser without needing a server push.
-const APP_VERSION = '2026-11-12-leave-fix-2';
+const APP_VERSION = '2026-11-12-leave-fix-3';
 
 async function checkAppVersionAndReloadIfStale() {
   try {
@@ -3238,6 +3238,9 @@ function renderDashboard() {
     .filter(e => e.leave_date >= cutoff.start && e.leave_date <= cutoff.end && isStillInEffect(e) && (e.leave_type === 'LNP' || e.leave_type === 'HLNP'))
     .sort((a, b) => a.leave_date < b.leave_date ? -1 : a.leave_date > b.leave_date ? 1 : 0);
   const lwopCutoffEmployeeIds = new Set(lwopCutoff.map(e => e.employee_id));
+  // Dashboard card: the cutoff that just ENDED is the one payroll is processing now.
+  const lwopOpts = payrollCutoffOptions();
+  const lwopDash = { openCutoff: lwopOpts[0], endedCutoff: lwopOpts[1], open: lwopReportFor(lwopOpts[0]), processing: lwopReportFor(lwopOpts[1]) };
 
   // Pending review = new leave requests AND cancellation requests —
   // both sit in the admin's Pending Requests panel awaiting action.
@@ -3347,8 +3350,9 @@ function renderDashboard() {
           <span class="dot-mark el"></span>
           <span class="faint" style="font-size:11px; letter-spacing:0.08em; text-transform:uppercase; font-weight:600;">Leave Without Pay</span>
         </div>
-        <div style="font-family:var(--font-display); font-size:32px; color:var(--teal); font-weight:600;">${lwopCutoffEmployeeIds.size}</div>
-        <div class="muted" style="font-size:12.5px; margin-top:4px;">${lwopCutoffEmployeeIds.size ? `This ${cutoff.label.toLowerCase()}.` : `No one on unpaid leave this ${cutoff.label.toLowerCase()}.`}</div>
+        <div style="font-family:var(--font-display); font-size:32px; color:var(--teal); font-weight:600;">${lwopDash.processing.people.length}</div>
+        <div class="muted" style="font-size:12.5px; margin-top:4px;">${lwopDash.processing.people.length ? `${lwopDash.processing.totalDays} day${lwopDash.processing.totalDays === 1 ? '' : 's'} to deduct · ${lwopDash.endedCutoff.label}` : `No Leave No Pay · ${lwopDash.endedCutoff.label}`}</div>
+        <div class="faint" style="font-size:11.5px; margin-top:6px;">Open now (${lwopDash.openCutoff.label}): ${lwopDash.open.people.length} member${lwopDash.open.people.length === 1 ? '' : 's'}</div>
       </div>
     </div>
   `;
@@ -3473,26 +3477,65 @@ function showDashOtConfirmedModal() {
   ` : `<p class="muted" style="margin:0;">No OT logged for the latest date.</p>`);
 }
 
+function lwopModalBodyHtml(idx) {
+  const opts = payrollCutoffOptions();
+  const c = opts[idx];
+  const rep = lwopReportFor(c);
+  const body = rep.people.length ? rep.people.map(p => `
+      <div style="border:1px solid var(--line-soft); border-radius:12px; padding:10px 12px;">
+        <div style="display:flex; justify-content:space-between; align-items:baseline; gap:8px;">
+          <span style="font-weight:600;">${escapeHtml(p.name)}</span>
+          <span style="font-weight:700; color:var(--coral);">${p.days} day${p.days === 1 ? '' : 's'}</span>
+        </div>
+        <div style="margin-top:6px; display:flex; flex-direction:column; gap:3px;">
+          ${p.entries.map(en => `
+            <div style="display:flex; justify-content:space-between; font-size:12.5px; gap:8px;">
+              <span>${formatPrettyDate(en.date)}</span>
+              <span class="faint">${lwopEntryDescription(en)} · ${en.days} day</span>
+            </div>`).join('')}
+        </div>
+      </div>`).join('')
+    : `<p class="muted" style="margin:0;">No one has Leave No Pay in this cutoff.</p>`;
+  return `
+    <div style="display:flex; justify-content:space-between; align-items:center; margin:2px 0 10px; font-size:12.5px;">
+      <span><strong>${rep.people.length}</strong> member${rep.people.length === 1 ? '' : 's'} · <strong>${rep.totalDays}</strong> total day${rep.totalDays === 1 ? '' : 's'}</span>
+      <span class="faint">${formatPrettyDate(c.start)} – ${formatPrettyDate(c.end)}</span>
+    </div>
+    <div style="display:flex; flex-direction:column; gap:10px; max-height:380px; overflow-y:auto; padding-right:4px;">${body}</div>`;
+}
+
 function showDashLwopModal() {
-  const isStillInEffect = (e) => e.status === STATUS.APPROVED || e.status === STATUS.CANCELLATION_PENDING;
-  const cutoff = getCurrentPayrollCutoffRange();
-  const lwopCutoff = state.leaveEntries
-    .filter(e => e.leave_date >= cutoff.start && e.leave_date <= cutoff.end && isStillInEffect(e) && (e.leave_type === 'LNP' || e.leave_type === 'HLNP'))
-    .sort((a, b) => a.leave_date < b.leave_date ? -1 : a.leave_date > b.leave_date ? 1 : 0);
-  openModal(`Leave Without Pay — ${cutoff.label}`, `
-    <p class="muted" style="margin:0 0 10px; font-size:12px;">${formatPrettyDate(cutoff.start)} – ${formatPrettyDate(cutoff.end)}</p>
-    ${lwopCutoff.length ? `
-      <div style="display:flex; flex-direction:column; gap:10px; max-height:400px; overflow-y:auto;">
-        ${lwopCutoff.map(e => `
-          <div style="display:flex; align-items:center; gap:10px; padding:8px 0; border-bottom:1px solid var(--line-soft);">
-            <span class="stamp el">${leaveStampLabel(e.leave_type, e.hours, true)}</span>
-            <span style="font-weight:600;">${employeeName(e.employee_id)}</span>
-            <span class="faint" style="font-size:11.5px; margin-left:auto;">${formatPrettyDate(e.leave_date)}</span>
-          </div>
-        `).join('')}
-      </div>
-    ` : `<p class="muted" style="margin:0;">No one on unpaid leave this ${cutoff.label.toLowerCase()}.</p>`}
+  const opts = payrollCutoffOptions();
+  const optionHtml = opts.map((c, i) => `<option value="${i}" ${i === 1 ? 'selected' : ''}>${c.label}${i === 0 ? ' (open now)' : i === 1 ? ' (for payroll now)' : ''}</option>`).join('');
+  openModal('Leave No Pay — for payroll deductions', `
+    <div style="display:flex; gap:8px; align-items:center; margin-bottom:6px;">
+      <select id="lwop-period" style="flex:1; padding:9px 10px; border-radius:6px; border:1px solid var(--line); font-family:inherit;">${optionHtml}</select>
+      <button type="button" class="btn btn-ghost btn-sm" id="lwop-download">Download CSV</button>
+    </div>
+    <div id="lwop-body">${lwopModalBodyHtml(1)}</div>
+    <p class="faint" style="font-size:11px; margin:10px 0 0;">1st Half = cutoff 20th–4th (paid before the 15th) · 2nd Half = cutoff 5th–19th (paid before the 30th). Only approved Leave No Pay is counted; 1 day = 8 hours.</p>
   `);
+  const sel = document.getElementById('lwop-period');
+  sel.addEventListener('change', () => { document.getElementById('lwop-body').innerHTML = lwopModalBodyHtml(Number(sel.value)); });
+  document.getElementById('lwop-download').addEventListener('click', () => downloadLwopCsv(Number(sel.value)));
+}
+
+function downloadLwopCsv(idx) {
+  const c = payrollCutoffOptions()[idx];
+  const rep = lwopReportFor(c);
+  const q = (v) => `"${String(v == null ? '' : v).replace(/"/g, '""')}"`;
+  const lines = [['Payroll cutoff', 'Employee', 'Date', 'Type', 'Duration', 'Days'].map(q).join(',')];
+  rep.people.forEach(p => {
+    p.entries.forEach(en => lines.push([c.label, p.name, en.date, en.type, lwopEntryDescription(en), en.days].map(q).join(',')));
+    lines.push([c.label, p.name, '', 'TOTAL', '', p.days].map(q).join(','));
+  });
+  lines.push(['', 'ALL MEMBERS', '', 'TOTAL', '', rep.totalDays].map(q).join(','));
+  const blob = new Blob(['﻿' + lines.join('\r\n')], { type: 'text/csv;charset=utf-8' });
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement('a');
+  a.href = url; a.download = `Leave-No-Pay_${c.start}_to_${c.end}.csv`;
+  document.body.appendChild(a); a.click(); a.remove();
+  setTimeout(() => URL.revokeObjectURL(url), 1000);
 }
 
 function dashboardStatCard(label, value, sub, accentCls, onClick) {
@@ -5986,63 +6029,104 @@ async function decideRequest(id, decision, opts = {}) {
 
 // ---- Leave Credits table --------------------------------------------
 
+function creditsTeamOpen() {
+  if (state.creditsEditMode) return true;
+  if (state.creditsTeamOpen != null) return state.creditsTeamOpen;
+  let saved = null;
+  try { saved = localStorage.getItem('th_credits_team_open'); } catch {}
+  return saved == null ? isAdmin() : saved === '1';
+}
+
+function creditInitials(name) {
+  return (name || '?').split(/\s+/).filter(Boolean).slice(0, 2).map(w => w[0].toUpperCase()).join('');
+}
+
+// Days already set aside for the Dec 25 - Jan 1 company holiday (still ahead of us).
+function reservedHolidayDays(emp) {
+  const today = isoDate(new Date());
+  const fy = currentFiscalYear();
+  return round2(state.leaveEntries
+    .filter(e => e.employee_id === emp.id && e.requested_by === SYSTEM_HOLIDAY_MARKER && e.status === STATUS.APPROVED
+      && e.leave_date >= today && fiscalYearForDate(e.leave_date) === fy)
+    .reduce((n, e) => n + dayFractionForEntry(e), 0));
+}
+
 function renderCreditTableCard() {
   const admin = isAdmin();
   const editMode = admin && state.creditsEditMode;
+  const me = state.employees.find(e => e.id === (state.profile && state.profile.employee_id));
+  const team = state.employees.filter(e => e.active !== false).sort(byKristinaFirstThenName);
+  const open = creditsTeamOpen();
 
-  const rows = state.employees
-    .filter(e => e.active !== false)
-    .sort(byKristinaFirstThenName)
-    .map(emp => {
-      const vl = getVLBalance(emp);
-      const sl = getSLBalance(emp);
-      const isMe = emp.id === state.profile.employee_id;
+  let hero = '';
+  if (me) {
+    const vl = getVLBalance(me), sl = getSLBalance(me);
+    const reserved = reservedHolidayDays(me);
+    const tile = (label, num, accent) => `
+      <div style="flex:1; border-radius:14px; padding:12px 14px; background:var(--paper); border:1px solid var(--line-soft); border-top:3px solid ${accent};">
+        <div class="faint" style="font-size:10.5px; letter-spacing:0.07em; text-transform:uppercase; font-weight:600;">${label}</div>
+        <div style="font-family:var(--font-display); font-size:30px; font-weight:600; color:var(--ink); line-height:1.15; margin-top:2px;">${num}</div>
+        <div class="faint" style="font-size:11px;">day${num === 1 ? '' : 's'} · ${round2(num * 8)} hrs</div>
+      </div>`;
+    hero = `
+      <div style="margin:10px 0 4px;">
+        <div style="font-size:13px; font-weight:600; margin-bottom:8px;">${escapeHtml(me.display_name)} <span class="faint" style="font-weight:500;">· your credits</span></div>
+        <div style="display:flex; gap:10px;">
+          ${tile('Vacation · VL', vl, 'var(--teal)')}
+          ${tile('Sick · SL', sl, 'var(--amber, #D9A441)')}
+        </div>
+        ${reserved > 0 ? `<p class="faint" style="font-size:11px; margin:8px 0 0;">Your VL already includes <strong>${reserved} day${reserved === 1 ? '' : 's'}</strong> set aside for the Dec 25 – Jan 1 company holiday.</p>` : ''}
+        <p class="faint" style="font-size:11px; margin:6px 0 0;">Not enough credits? File it as <strong>Leave No Pay (LNP)</strong>. EL uses SL first, then VL.</p>
+      </div>`;
+  }
 
-      const cell = 'padding:7px 8px; border-left:1px solid var(--line-soft); text-align:center; font-variant-numeric:tabular-nums;';
-      const fmt = (n) => `<span style="${n > 0 ? 'font-weight:600; color:var(--ink);' : 'color:var(--ink-faint);'}">${n}</span>`;
-
-      if (editMode) {
-        return `
-          <tr class="credit-row credit-row-editing" data-emp-id="${emp.id}" style="${isMe ? 'background:var(--row-highlight);' : ''}">
-            <td style="padding:6px 8px; max-width:120px; overflow:hidden; text-overflow:ellipsis; white-space:nowrap;">${escapeHtml(emp.display_name)}</td>
-            <td style="${cell}"><input type="text" inputmode="decimal" class="credit-input vl-input" data-emp-id="${emp.id}" value="${vl}" title="Vacation credits" style="width:46px; padding:2px 4px; border:1px solid var(--gold-line); border-radius:4px; font-size:12px; text-align:right;"></td>
-            <td style="${cell}"><input type="text" inputmode="decimal" class="credit-input sl-input" data-emp-id="${emp.id}" value="${sl}" title="Sick credits" style="width:46px; padding:2px 4px; border:1px solid var(--gold-line); border-radius:4px; font-size:12px; text-align:right;"></td>
-            <td style="${cell}"><button class="btn btn-primary btn-sm save-credit-btn" data-emp-id="${emp.id}" style="padding:3px 9px; font-size:11px;">Save</button></td>
-          </tr>
-        `;
-      }
-
+  const rows = team.map(emp => {
+    const vl = getVLBalance(emp), sl = getSLBalance(emp);
+    const isMe = me && emp.id === me.id;
+    const avatar = `<span style="flex-shrink:0; width:28px; height:28px; border-radius:50%; background:${isMe ? 'var(--teal)' : 'var(--line-soft)'}; color:${isMe ? '#fff' : 'var(--ink-soft)'}; display:flex; align-items:center; justify-content:center; font-size:10.5px; font-weight:700;">${escapeHtml(creditInitials(emp.display_name))}</span>`;
+    const pill = (label, n) => `<span style="flex-shrink:0; display:inline-flex; gap:5px; align-items:baseline; padding:3px 9px; border-radius:999px; background:var(--line-soft); font-size:11.5px;"><span class="faint" style="font-size:10px; font-weight:600;">${label}</span><strong style="${n > 0 ? '' : 'opacity:0.45;'}">${n}</strong></span>`;
+    if (editMode) {
       return `
-        <tr class="credit-row" data-emp-id="${emp.id}" style="${isMe ? 'background:var(--row-highlight);' : ''}">
-          <td style="padding:7px 8px; overflow:hidden; text-overflow:ellipsis;">${escapeHtml(emp.display_name)}</td>
-          <td style="${cell}" title="Vacation credits">${fmt(vl)}</td>
-          <td style="${cell}" title="Sick credits">${fmt(sl)}</td>
-        </tr>
-      `;
-    }).join('');
+        <div class="credit-row credit-row-editing" data-emp-id="${emp.id}" data-name="${escapeHtml(emp.display_name.toLowerCase())}" style="padding:9px 6px; border-bottom:1px solid var(--line-soft);">
+          <div style="display:flex; align-items:center; gap:8px; margin-bottom:6px; font-size:12.5px; font-weight:600;">${avatar}<span style="overflow:hidden; text-overflow:ellipsis; white-space:nowrap;">${escapeHtml(emp.display_name)}</span></div>
+          <div style="display:flex; align-items:center; gap:8px; padding-left:36px;">
+            <label class="faint" style="font-size:10.5px;">VL <input type="text" inputmode="decimal" class="credit-input vl-input" data-emp-id="${emp.id}" value="${vl}" style="width:54px; padding:3px 5px; border:1px solid var(--gold-line); border-radius:6px; font-size:12px; text-align:right;"></label>
+            <label class="faint" style="font-size:10.5px;">SL <input type="text" inputmode="decimal" class="credit-input sl-input" data-emp-id="${emp.id}" value="${sl}" style="width:54px; padding:3px 5px; border:1px solid var(--gold-line); border-radius:6px; font-size:12px; text-align:right;"></label>
+            <button class="btn btn-primary btn-sm save-credit-btn" data-emp-id="${emp.id}" style="padding:3px 11px; font-size:11px; margin-left:auto;">Save</button>
+          </div>
+        </div>`;
+    }
+    return `
+      <div class="credit-row" data-emp-id="${emp.id}" data-name="${escapeHtml(emp.display_name.toLowerCase())}" style="display:flex; align-items:center; gap:10px; padding:8px 6px; border-bottom:1px solid var(--line-soft); font-size:12.5px; ${isMe ? 'background:var(--row-highlight); border-radius:10px;' : ''}">
+        ${avatar}
+        <span style="flex:1; min-width:0; overflow:hidden; text-overflow:ellipsis; white-space:nowrap;${isMe ? ' font-weight:600;' : ''}">${escapeHtml(emp.display_name)}</span>
+        ${pill('VL', vl)}${pill('SL', sl)}
+      </div>`;
+  }).join('');
+
+  const teamSection = `
+    <div style="margin-top:12px; border-top:1px solid var(--line-soft); padding-top:10px; display:flex; flex-direction:column; flex:1; min-height:0;">
+      <div style="display:flex; align-items:center; justify-content:space-between; gap:8px;">
+        <button type="button" id="credits-team-toggle" ${editMode ? 'disabled' : ''} style="background:none; border:none; padding:2px 0; font-family:inherit; font-size:12.5px; font-weight:600; color:var(--teal); cursor:${editMode ? 'default' : 'pointer'};">
+          ${open ? '▾' : '▸'} Team credits <span class="faint" style="font-weight:500;">(${team.length})</span>
+        </button>
+        ${open ? `<input type="search" id="credits-search" placeholder="Find a name…" style="width:130px; padding:5px 9px; border-radius:999px; border:1px solid var(--line); font-family:inherit; font-size:11.5px;">` : ''}
+      </div>
+      ${open
+        ? `<div class="credit-scroll" style="margin-top:6px;">${rows || '<p class="muted">No employees yet.</p>'}</div>`
+        : `<p class="faint" style="font-size:11.5px; margin:8px 0 0;">Everyone else's credits are hidden so you can focus on yours. Open <strong>Team credits</strong> any time to cross-check.</p>`}
+    </div>`;
 
   return `
     <div class="card" style="padding:20px; display:flex; flex-direction:column;">
-      <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:4px;">
+      <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:2px;">
         <h3 style="margin:0; font-family:var(--font-display); font-size:16px; color:var(--teal);">Leave Credits</h3>
         ${admin ? `<button class="btn btn-ghost btn-sm" id="credits-edit-toggle" style="padding:4px 12px; font-size:11.5px;">${editMode ? 'Done' : 'Edit'}</button>` : ''}
       </div>
-      ${editMode ? `<p class="faint" style="font-size:11px; margin:0 0 10px;">Update a balance and click Save. Click "Done" when finished.</p>` : ''}
-      <div class="credit-scroll">
-        ${rows ? `<table class="credit-table" style="width:100%; border-collapse:collapse; font-size:12.5px;">
-          <thead>
-            <tr>
-              <th style="position:sticky; top:0; background:var(--paper-raised); text-align:left; padding:7px 8px; font-size:10.5px; letter-spacing:0.06em; text-transform:uppercase; color:var(--ink-soft); border-bottom:2px solid var(--line);">Employee</th>
-              <th style="position:sticky; top:0; background:var(--paper-raised); text-align:center; padding:7px 8px; width:${editMode ? 62 : 54}px; font-size:10.5px; letter-spacing:0.06em; text-transform:uppercase; color:var(--ink-soft); border-bottom:2px solid var(--line); border-left:1px solid var(--line-soft);">VL</th>
-              <th style="position:sticky; top:0; background:var(--paper-raised); text-align:center; padding:7px 8px; width:${editMode ? 62 : 54}px; font-size:10.5px; letter-spacing:0.06em; text-transform:uppercase; color:var(--ink-soft); border-bottom:2px solid var(--line); border-left:1px solid var(--line-soft);">SL</th>
-              ${editMode ? '<th style="position:sticky; top:0; background:var(--paper-raised); border-bottom:2px solid var(--line);"></th>' : ''}
-            </tr>
-          </thead>
-          <tbody>${rows}</tbody>
-        </table>` : '<p class="muted">No employees yet.</p>'}
-      </div>
+      ${editMode ? `<p class="faint" style="font-size:11px; margin:0 0 6px;">Update a balance and click Save. Click "Done" when finished.</p>` : ''}
+      ${hero}
+      ${teamSection}
       <style>
-        .credit-table tbody tr{ border-bottom:1px solid var(--line-soft); }
         .credit-scroll{
           flex: 1;
           min-height: 0;
@@ -6060,6 +6144,21 @@ function renderCreditTableCard() {
 }
 
 function attachCreditEditHandlers() {
+  const teamToggle = document.getElementById('credits-team-toggle');
+  if (teamToggle) {
+    teamToggle.addEventListener('click', () => {
+      state.creditsTeamOpen = !creditsTeamOpen();
+      try { localStorage.setItem('th_credits_team_open', state.creditsTeamOpen ? '1' : '0'); } catch {}
+      renderPreservingScroll(['.pending-scroll', '.credit-scroll'], renderLeaveTracker);
+    });
+  }
+  const creditSearch = document.getElementById('credits-search');
+  if (creditSearch) {
+    creditSearch.addEventListener('input', () => {
+      const q = creditSearch.value.trim().toLowerCase();
+      document.querySelectorAll('.credit-row').forEach(r => { r.style.display = (!q || (r.dataset.name || '').includes(q)) ? '' : 'none'; });
+    });
+  }
   const toggle = document.getElementById('credits-edit-toggle');
   if (toggle) {
     toggle.addEventListener('click', () => {
@@ -10146,6 +10245,62 @@ function isoDate(d) {
 // means the Second Half cutoff that's still open actually STARTED in
 // the previous month (its 20th), so this looks backward a month for
 // that specific case rather than starting fresh "today."
+
+// ---- Payroll cutoffs (per Kristina) ---------------------------------
+// 1st Half payroll: cutoff = 20th of the PREVIOUS month to the 4th of the
+//                   current month  (paid before the 15th).
+// 2nd Half payroll: cutoff = 5th to the 19th of the current month
+//                   (paid before the 30th).
+function payrollCutoffForDate(dt) {
+  const y = dt.getFullYear(), m = dt.getMonth(), d = dt.getDate();
+  const mon = (yy, mm) => new Date(yy, mm, 1).toLocaleString('en-US', { month: 'short', year: 'numeric' });
+  let c;
+  if (d >= 5 && d <= 19) {
+    c = { start: isoDate(new Date(y, m, 5)), end: isoDate(new Date(y, m, 19)), half: '2nd Half', payMonth: mon(y, m) };
+  } else if (d >= 20) {
+    c = { start: isoDate(new Date(y, m, 20)), end: isoDate(new Date(y, m + 1, 4)), half: '1st Half', payMonth: mon(y, m + 1) };
+  } else {
+    c = { start: isoDate(new Date(y, m - 1, 20)), end: isoDate(new Date(y, m, 4)), half: '1st Half', payMonth: mon(y, m) };
+  }
+  c.label = `${c.half} ${c.payMonth}`;
+  return c;
+}
+function payrollCutoffBefore(c) {
+  const dd = new Date(c.start + 'T00:00:00');
+  dd.setDate(dd.getDate() - 1);
+  return payrollCutoffForDate(dd);
+}
+// [current open cutoff, the one just ended (being processed for payroll), and two older]
+function payrollCutoffOptions() {
+  const list = [payrollCutoffForDate(new Date())];
+  for (let i = 0; i < 3; i++) list.push(payrollCutoffBefore(list[list.length - 1]));
+  return list;
+}
+
+// Approved Leave No Pay inside a cutoff, grouped per employee with day totals.
+function lwopReportFor(cutoff) {
+  const inEffect = (e) => e.status === STATUS.APPROVED || e.status === STATUS.CANCELLATION_PENDING;
+  const rows = state.leaveEntries
+    .filter(e => e.leave_date >= cutoff.start && e.leave_date <= cutoff.end && inEffect(e) && (e.leave_type === 'LNP' || e.leave_type === 'HLNP'))
+    .sort((a, b) => a.leave_date < b.leave_date ? -1 : a.leave_date > b.leave_date ? 1 : 0);
+  const byEmp = new Map();
+  rows.forEach(e => {
+    if (!byEmp.has(e.employee_id)) byEmp.set(e.employee_id, { employee_id: e.employee_id, name: employeeName(e.employee_id), entries: [], days: 0 });
+    const g = byEmp.get(e.employee_id);
+    const frac = dayFractionForEntry(e);
+    g.entries.push({ date: e.leave_date, type: e.leave_type, hours: e.hours != null && e.hours !== '' ? Number(e.hours) : null, days: frac, note: e.note || '' });
+    g.days = round2(g.days + frac);
+  });
+  const people = [...byEmp.values()].sort((a, b) => a.name.localeCompare(b.name));
+  return { people, totalDays: round2(people.reduce((n, p) => n + p.days, 0)) };
+}
+
+function lwopEntryDescription(en) {
+  if (en.type === 'HLNP') return 'Half day (4 hrs)';
+  if (en.hours && en.hours < 8) return `${en.hours} hr${en.hours === 1 ? '' : 's'}`;
+  return 'Whole day';
+}
+
 function getCurrentPayrollCutoffRange() {
   const now = new Date();
   const y = now.getFullYear();
