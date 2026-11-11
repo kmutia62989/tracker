@@ -1758,6 +1758,7 @@ function updateLeaveNavBadge() {
     if (tfB) tfB.style.display = 'none';
     const otB = document.getElementById('nav-ot-filing-badge');
     if (otB) otB.style.display = 'none';
+    try { updateOtMissedBadge(); } catch (e) { console.warn('ot badge', e); }
     // IPS badge is handled separately below (not admin-gated), so it's
     // deliberately NOT touched by this early return — an IPS-role-only
     // account still needs it to update even though every other badge
@@ -2052,7 +2053,7 @@ function renderCurrentView() {
 // has to remember to hard-refresh. Uses a tiny Supabase table
 // (app_version: key text primary key, value text) so it works across
 // every browser without needing a server push.
-const APP_VERSION = '2026-11-12-payroll-redfiles-1';
+const APP_VERSION = '2026-11-12-ot-rules-2';
 
 async function checkAppVersionAndReloadIfStale() {
   try {
@@ -3326,6 +3327,7 @@ function renderDashboard() {
 
   el.innerHTML = `
     ${payrollOverdueAlertHtml(true)}
+    ${otMissedAlertHtml(true)}
     <div style="display:grid; grid-template-columns: repeat(4, 1fr); gap:18px; margin-bottom:28px;">
       ${dashboardStatCard('Out today', [...new Set(todayEntries.map(e => e.employee_id))].length, [...new Set(todayEntries.map(e => employeeName(e.employee_id)))].join(', ') || 'No one is out today.', 'vl', `showDashOutTodayModal()`)}
       ${dashboardStatCard('Birthdays today', birthdaysToday.length, birthdaysToday.length ? birthdaysToday.map(emp => emp.display_name).join(', ') : 'No birthdays today.', 'sl', `showDashBirthdaysModal()`)}
@@ -8531,8 +8533,117 @@ function formatOtDateHeader(isoStr) {
   return `${weekday}, ${monthDay}`;
 }
 
+// ---------------------------------------------------------------------
+// OT capacity + final-output rules
+//   * 100 pending leads = 1 OT hour. Only WHOLE 100s can be filed
+//     (250 leads = 2 hours fileable, the other 50 "float" for people
+//     who finish a bit over 100/hour).
+//   * First to file, first to render. Hours already filed (or, once
+//     confirmed, the confirmed hours) by everyone else use up the pool.
+//   * The date can also be closed/opened by an admin.
+//   * The OT day runs from the LQ refresh (8:00 AM PHT = 12 MN UK) until
+//     the next refresh at 8:00 AM PHT the day after. Agents may fill in
+//     their output ANY time (no lock). The reminder only fires once the
+//     shift window has ended (8:00 AM PHT the next day) and output is
+//     still missing.
+// ---------------------------------------------------------------------
+const OT_ENFORCE_FROM = '2026-11-13'; // older dates are not chased
+function otEffectiveHours(entry) {
+  if (!entry) return 0;
+  const h = entry.confirmed ? entry.actual_hours : entry.assumed_hours;
+  return h ? Number(h) : 0;
+}
+function otFilingStatus(filingDate, excludeEmpId) {
+  const rec = state.otFilingDates.find(r => r.filing_date === filingDate);
+  const isOpen = !rec || rec.is_open !== false;
+  const pending = rec && rec.estimated_pending_leads != null ? Number(rec.estimated_pending_leads) : null;
+  const others = round2(state.otHoursEntries
+    .filter(e => e.filing_date === filingDate && e.employee_id !== excludeEmpId)
+    .reduce((sum, e) => sum + otEffectiveHours(e), 0));
+  let capacityHours = null, leftHours = null, leftLeads = null;
+  if (pending != null) {
+    capacityHours = Math.floor(pending / 100);
+    leftHours = Math.max(0, round2(capacityHours - others));
+    leftLeads = Math.max(0, round2(pending - others * 100));
+  }
+  return { rec, isOpen, pending, others, capacityHours, leftHours, leftLeads, full: pending != null && leftHours <= 0 };
+}
+function otShiftEnd(filingDate) {
+  const d = new Date(filingDate + 'T00:00:00Z');
+  d.setUTCDate(d.getUTCDate() + 1);
+  return new Date(d.toISOString().slice(0, 10) + 'T08:00:00+08:00');
+}
+function otShiftEnded(filingDate) { return new Date() >= otShiftEnd(filingDate); }
+function otShiftEndLabel(filingDate) {
+  const d = new Date(filingDate + 'T00:00:00Z');
+  d.setUTCDate(d.getUTCDate() + 1);
+  return `${MONTH_NAMES[d.getUTCMonth()].slice(0, 3)} ${d.getUTCDate()}, 8:00 AM PHT`;
+}
+// Output they must still add: OT hours filed, shift over, not confirmed.
+function otMissedFor(employeeId) {
+  const out = [];
+  state.otFilingDates.forEach(rec => {
+    const d = rec.filing_date;
+    if (d < OT_ENFORCE_FROM || !otShiftEnded(d)) return;
+    const e = getOtEntry(employeeId, d);
+    if (e && !e.confirmed && e.assumed_hours != null && Number(e.assumed_hours) > 0) out.push({ date: d, entry: e });
+  });
+  return out.sort((a, b) => a.date.localeCompare(b.date));
+}
+function myOtMissed() {
+  if (!state.profile || !state.profile.employee_id) return [];
+  return otMissedFor(state.profile.employee_id);
+}
+function updateOtMissedBadge() {
+  const b = document.getElementById('nav-ot-filing-badge');
+  if (!b) return;
+  if (isAdmin()) return; // admins keep their own notification count
+  const n = myOtMissed().length;
+  if (n > 0) { b.textContent = String(n); b.style.display = 'inline-flex'; }
+  else b.style.display = 'none';
+}
+function otMissedAlertHtml(compact) {
+  const list = myOtMissed();
+  if (!list.length) return '';
+  const first = list[0];
+  const dates = list.map(m => `<strong>${escapeHtml(formatPrettyDate(m.date))}</strong>`).join(', ');
+  return `
+    <div style="display:flex; align-items:flex-start; gap:12px; padding:14px 16px; margin:0 0 ${compact ? '20px' : '16px'}; border-radius:12px; background:var(--coral-wash, #FBE9E5); border:1px solid var(--coral); color:var(--ink);">
+      <span style="font-size:20px; line-height:1;">⏰</span>
+      <div style="flex:1; font-size:13px; line-height:1.5;">
+        <div style="font-weight:700; margin-bottom:2px;">Your OT output is missing</div>
+        Your OT shift on ${dates} has ended, but your final output isn't in yet. Please add your output so your OT hours can be confirmed — this reminder stays until you do.
+        <div style="margin-top:8px;">
+          ${compact
+            ? `<button class="btn btn-primary btn-sm" onclick="switchView('ot-filing')">Go to OT Hours Filing</button>`
+            : `<button class="btn btn-primary btn-sm" onclick="openOtConfirmModal('${first.entry.employee_id}','${first.date}')">Add my output now</button>`}
+        </div>
+      </div>
+    </div>`;
+}
+// Returns an error message (or null) for a proposed hours/output pair.
+function otOutputProblem(hours, output) {
+  if (hours * 100 > output + 0.0001) {
+    return `You only completed ${output} output, which covers ${round2(output / 100)} hr — not ${hours} hr. Please input the correct number.`;
+  }
+  return null;
+}
+async function toggleOtDateOpen(filingDate, makeOpen) {
+  if (!isOtAdmin()) return;
+  const { error } = await writeOtFilingDateTotals(filingDate, { is_open: makeOpen });
+  if (error) {
+    console.error(error);
+    showToast(/is_open/i.test(error.message || '') ? 'Needs setup — run the OT SQL file in Supabase first.' : 'Could not update the date.', true);
+    return;
+  }
+  showToast(makeOpen ? 'OT filing re-opened for this date.' : 'OT filing closed for this date.');
+  await loadOtFilingDates();
+  renderOtFiling();
+}
+
 function renderOtFiling() {
   renderOtFilingBell();
+  updateOtMissedBadge();
   const actionsEl = document.getElementById('ot-filing-actions');
   // Same dropdown pattern as the sidebar's "Team Hub / Operations Hub"
   // switcher and Account Hub's Leave Tracker/Employees toggle — one
@@ -8627,7 +8738,16 @@ function renderOtFiling() {
     return;
   }
 
-  const headerCells = dates.map(d => `<th colspan="2" style="padding:10px 8px; text-align:center; font-size:11px; font-weight:600; color:var(--ink-faint); text-transform:uppercase; letter-spacing:0.03em;">${formatOtDateHeader(d)}</th>`).join('');
+  const headerCells = dates.map(d => {
+    const st = otFilingStatus(d, null);
+    let pill;
+    if (!st.isOpen) pill = `<span style="display:inline-block; padding:2px 9px; border-radius:999px; font-size:10.5px; background:var(--coral-wash); color:var(--coral);">🔒 Closed</span>`;
+    else if (st.full) pill = `<span style="display:inline-block; padding:2px 9px; border-radius:999px; font-size:10.5px; background:var(--coral-wash); color:var(--coral);">Full — no leads left</span>`;
+    else if (st.pending != null) pill = `<span style="display:inline-block; padding:2px 9px; border-radius:999px; font-size:10.5px; background:var(--green-wash); color:var(--green);">Open · ${st.leftHours}h left</span>`;
+    else pill = `<span style="display:inline-block; padding:2px 9px; border-radius:999px; font-size:10.5px; background:var(--line-soft); color:var(--ink-soft);">Open</span>`;
+    const toggle = admin ? `<button type="button" class="ot-toggle-open-btn" data-date="${d}" data-open="${st.isOpen ? '1' : '0'}" style="display:block; margin:4px auto 0; font-size:10px; padding:1px 8px; border:1px solid var(--line); border-radius:999px; background:transparent; cursor:pointer; color:var(--ink-soft); font-family:inherit; text-transform:none; letter-spacing:0;">${st.isOpen ? 'Close filing' : 'Re-open filing'}</button>` : '';
+    return `<th colspan="2" style="padding:10px 8px; text-align:center; font-size:11px; font-weight:600; color:var(--ink-faint); text-transform:uppercase; letter-spacing:0.03em;">${formatOtDateHeader(d)}<div style="margin-top:4px; text-transform:none; letter-spacing:0;">${pill}</div>${toggle}</th>`;
+  }).join('');
   const subHeaderCells = dates.map(() => `
     <th style="padding:4px 6px; text-align:center; font-size:9.5px; font-weight:600; color:var(--ink-faint); text-transform:uppercase; letter-spacing:0.02em;">No. of Hours</th>
     <th style="padding:4px 6px; text-align:center; font-size:9.5px; font-weight:600; color:var(--ink-faint); text-transform:uppercase; letter-spacing:0.02em;">Total Output</th>
@@ -8769,7 +8889,7 @@ function renderOtFiling() {
           <td style="padding:4px; text-align:center;">
             <div style="position:relative; display:inline-block;">
               <div style="width:52px; padding:5px 4px; text-align:center; border-radius:6px; border:1px solid var(--green); background:var(--green-wash); color:var(--green); font-weight:700; font-size:12.5px;" title="Confirmed — locked">${displayVal}</div>
-              ${(canAmendThis || canDeleteThis) ? `<button type="button" class="ot-menu-trigger" data-emp-id="${emp.id}" data-date="${d}" data-can-amend="${canAmendThis ? '1' : '0'}" data-can-delete="${canDeleteThis ? '1' : '0'}" title="More actions" style="position:absolute; left:100%; top:50%; transform:translateY(-50%); margin-left:4px; background:none; border:1px solid var(--line); border-radius:6px; padding:1px 7px; cursor:pointer; color:var(--ink-soft); font-size:12px; line-height:1;">⋯</button>` : ''}
+              ${(canAmendThis || canDeleteThis) ? `<button type="button" class="ot-menu-trigger" data-emp-id="${emp.id}" data-date="${d}" data-can-amend="${canAmendThis ? '1' : '0'}" data-can-reopen="${admin ? '1' : '0'}" data-can-delete="${canDeleteThis ? '1' : '0'}" title="More actions" style="position:absolute; left:100%; top:50%; transform:translateY(-50%); margin-left:4px; background:none; border:1px solid var(--line); border-radius:6px; padding:1px 7px; cursor:pointer; color:var(--ink-soft); font-size:12px; line-height:1;">⋯</button>` : ''}
             </div>
           </td>
         ` + outputCell;
@@ -8787,7 +8907,10 @@ function renderOtFiling() {
       // to the hours input instead — exactly the same available_for_ot
       // gate as before, just visually merged into a single column.
       if (!availableForOt) {
-        return `<td style="padding:8px; text-align:center;"><input type="checkbox" class="ot-availability-checkbox" data-emp-id="${emp.id}" data-date="${d}" title="Confirm availability for OT" style="width:16px; height:16px; cursor:pointer;"></td>` + outputCell;
+        const stCb = otFilingStatus(d, emp.id);
+        const blockedCb = !admin && (!stCb.isOpen || stCb.full);
+        const cbTitle = blockedCb ? (!stCb.isOpen ? 'OT filing is closed for this date' : 'No pending leads left to work on for this date') : 'Confirm availability for OT';
+        return `<td style="padding:8px; text-align:center;"><input type="checkbox" class="ot-availability-checkbox" data-emp-id="${emp.id}" data-date="${d}" title="${cbTitle}" ${blockedCb ? 'disabled' : ''} style="width:16px; height:16px; cursor:${blockedCb ? 'not-allowed' : 'pointer'};${blockedCb ? ' opacity:0.35;' : ''}"></td>` + outputCell;
       }
 
       const inputVal = hasAssumed ? entry.assumed_hours : '';
@@ -8809,7 +8932,7 @@ function renderOtFiling() {
       return `
         <td style="padding:4px; text-align:center;">
           <div style="position:relative; display:inline-block;">
-            <input type="number" min="0" ${(!hasAssumed && suggestedHours != null) ? `max="${suggestedHours}"` : ''} class="priolist-input ot-hours-input" data-emp-id="${emp.id}" data-date="${d}" value="${inputVal}"
+            <input type="number" min="0"  class="priolist-input ot-hours-input" data-emp-id="${emp.id}" data-date="${d}" value="${inputVal}"
               style="width:52px; padding:5px 4px; text-align:center; border-radius:6px; border:1px solid var(--line); font-family:inherit; font-size:12.5px;">
             ${badge}
           </div>
@@ -8839,11 +8962,15 @@ function renderOtFiling() {
   const latestDateIdx = dates.length - 1;
   const latestBannerCount = latestDateIdx >= 0 ? confirmedForOtCountPerDate[latestDateIdx] : 0;
   const latestBannerHours = latestDateIdx >= 0 ? suggestedHoursPerEmployeePerDate[latestDateIdx] : null;
-  const topBannerText = (latestBannerCount > 0 && latestBannerHours != null)
-    ? `${latestBannerCount} agent${latestBannerCount === 1 ? '' : 's'} confirmed for OT — ${latestBannerHours}h available for each`
-    : 'No agents confirmed for OT yet';
+  const latestSt = latestDateIdx >= 0 ? otFilingStatus(dates[latestDateIdx], null) : null;
+  const topBannerText = (latestSt && latestSt.pending != null)
+    ? `${formatOtDateHeader(dates[latestDateIdx])}: ${latestSt.pending} pending leads → ${latestSt.capacityHours}h can be filed · ${latestSt.others}h filed · ${latestSt.leftHours}h still open (${latestSt.leftLeads} leads left)${!latestSt.isOpen ? ' · FILING CLOSED' : ''}`
+    : (latestBannerCount > 0 && latestBannerHours != null)
+      ? `${latestBannerCount} agent${latestBannerCount === 1 ? '' : 's'} confirmed for OT — ${latestBannerHours}h available for each`
+      : 'No agents confirmed for OT yet';
 
   el.innerHTML = `
+    ${otMissedAlertHtml(false)}
     <div class="card" style="padding:22px;">
       <div style="background:var(--paper); color:var(--teal); border:1px solid var(--line-soft); border-radius:8px; padding:12px 16px; font-size:13px; font-weight:700; letter-spacing:0.01em; line-height:1.5; margin:0 0 16px;">
         ${topBannerText}
@@ -8931,6 +9058,9 @@ function renderOtFiling() {
     </style>
   `;
 
+  document.querySelectorAll('.ot-toggle-open-btn').forEach(btn => {
+    btn.addEventListener('click', () => toggleOtDateOpen(btn.dataset.date, btn.dataset.open !== '1'));
+  });
   document.querySelectorAll('.ot-estimated-leads-input').forEach(input => {
     input.addEventListener('change', () => saveOtEstimatedPendingLeads(input.dataset.date, input.value));
   });
@@ -8966,10 +9096,12 @@ function showOtMenu(triggerBtn) {
   const canAmend = triggerBtn.dataset.canAmend === '1';
   const canDelete = triggerBtn.dataset.canDelete === '1';
   const canUncheck = triggerBtn.dataset.canUncheck === '1';
+  const canReopen = triggerBtn.dataset.canReopen === '1';
 
   const items = [];
   if (canConfirm) items.push({ action: 'confirm', label: 'Confirm' });
   if (canAmend) items.push({ action: 'amend', label: 'Amend' });
+  if (canReopen) items.push({ action: 'reopen', label: 'Re-open for editing' });
   if (canUncheck) items.push({ action: 'uncheck', label: 'Remove OT availability', danger: true });
   if (canDelete) items.push({ action: 'delete', label: 'Delete', danger: true });
   if (!items.length) return;
@@ -8995,10 +9127,27 @@ function showOtMenu(triggerBtn) {
       hideOtMenu();
       if (el.dataset.action === 'confirm') openOtConfirmModal(empId, date);
       if (el.dataset.action === 'amend') openOtAmendModal(empId, date);
+      if (el.dataset.action === 'reopen') reopenOtEntry(empId, date);
       if (el.dataset.action === 'uncheck') saveOtAvailability(empId, date, false);
       if (el.dataset.action === 'delete') deleteOtEntry(empId, date);
     });
   });
+}
+
+async function reopenOtEntry(employeeId, filingDate) {
+  if (!isOtAdmin()) { showToast('Only admins can re-open a confirmed entry.', true); return; }
+  const entry = getOtEntry(employeeId, filingDate);
+  if (!entry) return;
+  if (!confirm('Re-open this confirmed OT entry? The agent will be able to change their hours and output and confirm again.')) return;
+  const { error } = await sb.from('ot_hours_entries').update({
+    confirmed: false,
+    assumed_hours: entry.actual_hours != null ? entry.actual_hours : entry.assumed_hours,
+    updated_at: new Date().toISOString(),
+  }).eq('id', entry.id);
+  if (error) { console.error(error); showToast('Could not re-open the entry.', true); return; }
+  showToast('Entry re-opened.');
+  await loadOtHoursEntries();
+  renderOtFiling();
 }
 
 function hideOtMenu() {
@@ -9058,6 +9207,11 @@ function openOtAmendModal(employeeId, filingDate) {
     const newOutput = parseFloat(document.getElementById('ot-amend-output').value);
     if (isNaN(newHours) || newHours < 0) { showToast('Enter a valid, non-negative number of hours.', true); return; }
     if (isNaN(newOutput) || newOutput < 0) { showToast('Enter a valid, non-negative total output.', true); return; }
+    const amendProblem = otOutputProblem(newHours, newOutput);
+    if (amendProblem) {
+      if (isOtAdmin()) { if (!confirm(amendProblem + '\n\nYou are an admin — save anyway?')) return; }
+      else { showToast(amendProblem, true); return; }
+    }
 
     const prevHours = entry.actual_hours;
     const prevOutput = entry.total_output;
@@ -9324,6 +9478,11 @@ async function saveOtAvailability(employeeId, filingDate, checked) {
     renderOtFiling();
     return;
   }
+  if (checked && !isOtAdmin()) {
+    const st = otFilingStatus(filingDate, employeeId);
+    if (!st.isOpen) { showToast('OT filing is closed for this date.', true); renderOtFiling(); return; }
+    if (st.full) { showToast('There are no pending leads left to work on for this date.', true); renderOtFiling(); return; }
+  }
 
   if (!checked) {
     // Unmarking wipes the day clean — deletes the row outright rather
@@ -9389,6 +9548,29 @@ async function saveOtHours(employeeId, filingDate, rawValue) {
   }
 
   const existing = getOtEntry(employeeId, filingDate);
+
+  // Capacity rules (first filed, first to render). Lowering or clearing
+  // hours is always allowed so the pool can free up for others.
+  if (hours !== null && hours > 0) {
+    const st = otFilingStatus(filingDate, employeeId);
+    const currentlyFiled = existing && existing.assumed_hours != null ? Number(existing.assumed_hours) : 0;
+    const increasing = hours > currentlyFiled;
+    let problem = null;
+    if (increasing && !st.isOpen) {
+      problem = 'OT filing is closed for this date.';
+    } else if (increasing && st.pending != null && hours > st.leftHours + 0.0001) {
+      problem = `We only have ${st.leftLeads} pending lead${st.leftLeads === 1 ? '' : 's'} left to work on (${st.leftHours} hr). Please file your OT hours accordingly.`;
+    }
+    if (problem) {
+      if (isOtAdmin()) {
+        if (!confirm(problem + '\n\nYou are an admin — save it anyway?')) { renderOtFiling(); return; }
+      } else {
+        showToast(problem, true);
+        renderOtFiling();
+        return;
+      }
+    }
+  }
 
   // A full clear should genuinely DELETE the row, not leave it behind
   // with fields nulled out. This triggers whenever the field is being
@@ -9460,7 +9642,7 @@ function openOtConfirmModal(employeeId, filingDate) {
       <div class="field">
         <label for="ot-total-output">Total output</label>
         <input type="number" id="ot-total-output" min="0" step="1" required placeholder="Enter the total output" style="width:100%; padding:9px 10px; border-radius:6px; border:1px solid var(--line); font-family:inherit;">
-        <p class="faint" style="font-size:11px; margin:4px 0 0;">Type the actual total \u2014 there's no automatic formula.</p>
+        <p class="faint" style="font-size:11px; margin:4px 0 0;">Type your real total. Your hours can't be more than the output supports (100 output = 1 hr, e.g. 150 = up to 1.5 hr) or more than the hours you filed.</p>
       </div>
       <button type="submit" class="btn btn-primary" style="justify-content:center;">Confirm</button>
     </form>
@@ -9473,6 +9655,15 @@ function openOtConfirmModal(employeeId, filingDate) {
     const totalOutput = parseFloat(document.getElementById('ot-total-output').value);
     if (isNaN(actualHours) || actualHours < 0) { showToast('Enter a valid, non-negative number of hours.', true); return; }
     if (isNaN(totalOutput) || totalOutput < 0) { showToast('Enter a valid, non-negative total output.', true); return; }
+
+    const outProblem = otOutputProblem(actualHours, totalOutput);
+    const filedHrs = entry.assumed_hours != null ? Number(entry.assumed_hours) : null;
+    const overFiled = filedHrs != null && actualHours > filedHrs + 0.0001;
+    const problem = outProblem || (overFiled ? `You filed ${filedHrs} hr, so you can't confirm more than that. Please ask your admin if this needs to change.` : null);
+    if (problem) {
+      if (isOtAdmin()) { if (!confirm(problem + '\n\nYou are an admin — confirm anyway?')) return; }
+      else { showToast(problem, true); return; }
+    }
 
     const { error } = await sb.from('ot_hours_entries').update({
       actual_hours: actualHours,
