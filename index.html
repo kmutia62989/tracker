@@ -1349,7 +1349,11 @@ const MAINTENANCE_WINDOW_START_HOUR = 2;  // 2:00 AM
 const MAINTENANCE_WINDOW_END_HOUR = 10;   // 10:00 AM
 const MAINTENANCE_EXEMPT_NAMES = ['Kristina Mutia'];
 
+// Turned OFF: the app stays open 24/7 so agents can file leave any time.
+// Set to true to bring back the 2-10 AM (Mon-Fri) lock.
+const MAINTENANCE_ENABLED = false;
 function inMaintenanceWindow() {
+  if (!MAINTENANCE_ENABLED) return false;
   const now = new Date();
   const day = now.getDay(); // 0 = Sunday, 6 = Saturday
   if (day === 0 || day === 6) return false; // weekends are fully exempt — no maintenance window at all
@@ -2053,7 +2057,7 @@ function renderCurrentView() {
 // has to remember to hard-refresh. Uses a tiny Supabase table
 // (app_version: key text primary key, value text) so it works across
 // every browser without needing a server push.
-const APP_VERSION = '2026-11-12-ot-rules-2';
+const APP_VERSION = '2026-11-12-ot-rules-3';
 
 async function checkAppVersionAndReloadIfStale() {
   try {
